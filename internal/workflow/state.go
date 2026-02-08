@@ -21,11 +21,11 @@ type WorkflowInput struct {
 	ToolsConfig    models.ToolsConfig `json:"tools_config"`
 }
 
-// WorkflowState is passed through ContinueAsNew.
+// SessionState is passed through ContinueAsNew.
 // Uses ConversationHistory interface to allow pluggable storage backends.
 //
-// Maps to: codex-rs/core/src/state/session.rs SessionState
-type WorkflowState struct {
+// Corresponds to: codex-rs/core/src/state/session.rs SessionState
+type SessionState struct {
 	ConversationID string                     `json:"conversation_id"`
 	History        history.ConversationHistory `json:"-"`              // Not serialized directly; see note below
 	HistoryItems   []models.ConversationItem  `json:"history_items"` // Serialized form for ContinueAsNew
@@ -47,7 +47,7 @@ type WorkflowResult struct {
 
 // initHistory initializes the History field from HistoryItems.
 // Called after deserialization (ContinueAsNew) to restore the interface.
-func (s *WorkflowState) initHistory() {
+func (s *SessionState) initHistory() {
 	h := history.NewInMemoryHistory()
 	for _, item := range s.HistoryItems {
 		h.AddItem(item)
@@ -57,7 +57,7 @@ func (s *WorkflowState) initHistory() {
 
 // syncHistoryItems copies history to HistoryItems for serialization.
 // Called before ContinueAsNew to persist state.
-func (s *WorkflowState) syncHistoryItems() {
+func (s *SessionState) syncHistoryItems() {
 	items, _ := s.History.GetRawItems()
 	s.HistoryItems = items
 }

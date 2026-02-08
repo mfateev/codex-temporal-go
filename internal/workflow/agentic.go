@@ -23,7 +23,7 @@ import (
 //
 // Maps to: codex-rs/core/src/codex.rs run_turn
 func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult, error) {
-	state := WorkflowState{
+	state := SessionState{
 		ConversationID: input.ConversationID,
 		History:        history.NewInMemoryHistory(),
 		ModelConfig:    input.ModelConfig,
@@ -43,29 +43,29 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 		return WorkflowResult{}, fmt.Errorf("failed to add user message: %w", err)
 	}
 
-	return runAgenticLoop(ctx, state)
+	return state.runAgenticLoop(ctx)
 }
 
 // AgenticWorkflowContinued handles ContinueAsNew.
-func AgenticWorkflowContinued(ctx workflow.Context, state WorkflowState) (WorkflowResult, error) {
+func AgenticWorkflowContinued(ctx workflow.Context, state SessionState) (WorkflowResult, error) {
 	// Restore History interface from serialized HistoryItems
 	state.initHistory()
-	return runAgenticLoop(ctx, state)
+	return state.runAgenticLoop(ctx)
 }
 
 // runAgenticLoop is the main loop logic.
 //
 // Maps to: codex-rs/core/src/codex.rs run_sampling_request
-func runAgenticLoop(ctx workflow.Context, state WorkflowState) (WorkflowResult, error) {
+func (s *SessionState) runAgenticLoop(ctx workflow.Context) (WorkflowResult, error) {
 	logger := workflow.GetLogger(ctx)
 	totalTokens := 0
 	toolCallsExecuted := []string{}
 
-	for state.IterationCount < state.MaxIterations {
-		logger.Info("Starting iteration", "iteration", state.IterationCount)
+	for s.IterationCount < s.MaxIterations {
+		logger.Info("Starting iteration", "iteration", s.IterationCount)
 
 		// Get history for prompt
-		historyItems, err := state.History.GetForPrompt()
+		historyItems, err := s.History.GetForPrompt()
 		if err != nil {
 			return WorkflowResult{}, fmt.Errorf("failed to get history: %w", err)
 		}
@@ -85,8 +85,8 @@ func runAgenticLoop(ctx workflow.Context, state WorkflowState) (WorkflowResult, 
 		// Call LLM Activity
 		llmInput := activities.LLMActivityInput{
 			History:     historyItems,
-			ModelConfig: state.ModelConfig,
-			ToolSpecs:   state.ToolSpecs,
+			ModelConfig: s.ModelConfig,
+			ToolSpecs:   s.ToolSpecs,
 		}
 
 		var llmResult activities.LLMActivityOutput
@@ -98,9 +98,9 @@ func runAgenticLoop(ctx workflow.Context, state WorkflowState) (WorkflowResult, 
 				switch activityErr.Type {
 				case models.ErrorTypeContextOverflow:
 					logger.Warn("Context overflow, triggering ContinueAsNew")
-					state.IterationCount = 0
-					state.syncHistoryItems()
-					return WorkflowResult{}, workflow.NewContinueAsNewError(ctx, "AgenticWorkflowContinued", state)
+					s.IterationCount = 0
+					s.syncHistoryItems()
+					return WorkflowResult{}, workflow.NewContinueAsNewError(ctx, "AgenticWorkflowContinued", *s)
 
 				case models.ErrorTypeAPILimit:
 					logger.Warn("API rate limit, sleeping for 1 minute")
@@ -124,7 +124,7 @@ func runAgenticLoop(ctx workflow.Context, state WorkflowState) (WorkflowResult, 
 		// Add all LLM response items to history
 		// Matches Codex: record_into_history(items)
 		for _, item := range llmResult.Items {
-			if err := state.History.AddItem(item); err != nil {
+			if err := s.History.AddItem(item); err != nil {
 				return WorkflowResult{}, fmt.Errorf("failed to add response item: %w", err)
 			}
 		}
@@ -142,7 +142,7 @@ func runAgenticLoop(ctx workflow.Context, state WorkflowState) (WorkflowResult, 
 		if len(functionCalls) > 0 {
 			logger.Info("Executing tools", "count", len(functionCalls))
 
-			toolResults, err := executeToolsInParallel(ctx, functionCalls, state.ToolSpecs)
+			toolResults, err := executeToolsInParallel(ctx, functionCalls, s.ToolSpecs)
 			if err != nil {
 				return WorkflowResult{}, fmt.Errorf("failed to execute tools: %w", err)
 			}
@@ -168,51 +168,51 @@ func runAgenticLoop(ctx workflow.Context, state WorkflowState) (WorkflowResult, 
 					Output: outputPayload,
 				}
 
-				if err := state.History.AddItem(item); err != nil {
+				if err := s.History.AddItem(item); err != nil {
 					return WorkflowResult{}, fmt.Errorf("failed to add tool result: %w", err)
 				}
 			}
 
 			// Continue loop to get next LLM response
-			state.IterationCount++
+			s.IterationCount++
 			continue
 		}
 
 		// No function calls - check finish reason
 		if llmResult.FinishReason == models.FinishReasonStop {
-			logger.Info("Conversation completed", "iterations", state.IterationCount)
+			logger.Info("Conversation completed", "iterations", s.IterationCount)
 			return WorkflowResult{
-				ConversationID:    state.ConversationID,
-				TotalIterations:   state.IterationCount + 1,
+				ConversationID:    s.ConversationID,
+				TotalIterations:   s.IterationCount + 1,
 				TotalTokens:       totalTokens,
 				ToolCallsExecuted: toolCallsExecuted,
 			}, nil
 		}
 
 		// Other finish reasons without tool calls - break
-		state.IterationCount++
+		s.IterationCount++
 		break
 	}
 
 	// Max iterations reached
-	if state.IterationCount >= state.MaxIterations {
+	if s.IterationCount >= s.MaxIterations {
 		logger.Info("Max iterations reached, triggering ContinueAsNew")
 
-		tokenCount, _ := state.History.EstimateTokenCount()
-		contextUsage := float64(tokenCount) / float64(state.ModelConfig.ContextWindow)
+		tokenCount, _ := s.History.EstimateTokenCount()
+		contextUsage := float64(tokenCount) / float64(s.ModelConfig.ContextWindow)
 
 		if contextUsage > 0.8 {
 			logger.Info("High context usage", "usage", contextUsage)
 		}
 
-		state.IterationCount = 0
-		state.syncHistoryItems()
-		return WorkflowResult{}, workflow.NewContinueAsNewError(ctx, "AgenticWorkflowContinued", state)
+		s.IterationCount = 0
+		s.syncHistoryItems()
+		return WorkflowResult{}, workflow.NewContinueAsNewError(ctx, "AgenticWorkflowContinued", *s)
 	}
 
 	return WorkflowResult{
-		ConversationID:    state.ConversationID,
-		TotalIterations:   state.IterationCount,
+		ConversationID:    s.ConversationID,
+		TotalIterations:   s.IterationCount,
 		TotalTokens:       totalTokens,
 		ToolCallsExecuted: toolCallsExecuted,
 	}, nil

@@ -283,14 +283,14 @@ for _, future := range futures {
 
 **Pattern:**
 ```go
-type WorkflowState struct {
+type SessionState struct {
     History          ConversationHistory
     ToolRegistry     *ToolRegistry
     IterationCount   int
     MaxIterations    int
 }
 
-func AgenticWorkflow(ctx workflow.Context, state WorkflowState) error {
+func AgenticWorkflow(ctx workflow.Context, state SessionState) error {
     for state.IterationCount < state.MaxIterations {
         // Execute iteration
         state.IterationCount++
@@ -362,7 +362,7 @@ func (h *ExternalHistory) GetForPrompt() ([]ConversationItem, error) {
 }
 ```
 
-**Status:** The `ConversationHistory` interface is now implemented with `InMemoryHistory` as the default backend. `WorkflowState` uses this interface as designed, enabling future swapping to external persistence without changing workflow logic.
+**Status:** The `ConversationHistory` interface is now implemented with `InMemoryHistory` as the default backend. `SessionState` uses this interface as designed, enabling future swapping to external persistence without changing workflow logic.
 
 **TODO (Future):** Research all uses of `raw_items()` in Codex to ensure they can be done in Activities when we move to external persistence. Current uses:
 - Turn counting (query operation)
@@ -473,7 +473,7 @@ toolActivityOptions := workflow.ActivityOptions{
 
 **Workflow Error Handling:**
 ```go
-func AgenticWorkflow(ctx workflow.Context, state WorkflowState) error {
+func AgenticWorkflow(ctx workflow.Context, state SessionState) error {
     // Execute LLM activity
     var llmResult LLMActivityOutput
     err := workflow.ExecuteActivity(llmCtx, ExecuteLLMActivity, input).Get(ctx, &llmResult)
@@ -570,10 +570,10 @@ type WorkflowInput struct {
     ToolsConfig    ToolsConfig
 }
 
-// WorkflowState is passed through ContinueAsNew.
+// SessionState is passed through ContinueAsNew.
 // Uses HistoryItems ([]ConversationItem) for serialization rather than
 // embedding the ConversationHistory interface directly.
-type WorkflowState struct {
+type SessionState struct {
     ConversationID string
     HistoryItems   []ConversationItem  // Serializable history for ContinueAsNew
     ModelConfig    ModelConfig
@@ -594,7 +594,7 @@ type WorkflowResult struct {
 // Returns (WorkflowResult, error) to provide structured output.
 func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult, error) {
     // Initialize state on first run
-    state := WorkflowState{
+    state := SessionState{
         ConversationID: input.ConversationID,
         ModelConfig:    input.ModelConfig,
         MaxIterations:  20,
@@ -608,11 +608,11 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
     })
 
     // Run the agentic loop
-    return runAgenticLoop(ctx, state)
+    return state.runAgenticLoop(ctx)
 }
 
 // runAgenticLoop is the main loop logic
-func runAgenticLoop(ctx workflow.Context, state WorkflowState) (WorkflowResult, error) {
+func (s *SessionState) runAgenticLoop(ctx workflow.Context) (WorkflowResult, error) {
     for state.IterationCount < state.MaxIterations {
         // Call LLM Activity
         llmInput := LLMActivityInput{
@@ -753,7 +753,7 @@ codex-temporal-go/
 ├── internal/
 │   ├── workflow/        # Workflow definitions
 │   │   ├── agentic.go   # Main agentic loop
-│   │   └── state.go     # Session state (WorkflowInput, WorkflowState, WorkflowResult)
+│   │   └── state.go     # Session state (WorkflowInput, SessionState, WorkflowResult)
 │   ├── activities/      # Activity implementations
 │   │   ├── llm.go       # LLM call activity
 │   │   └── tools.go     # Tool execution activity (generic dispatcher)
