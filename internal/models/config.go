@@ -26,7 +26,7 @@ func DefaultModelConfig() ModelConfig {
 type ToolsConfig struct {
 	EnableShell    bool `json:"enable_shell"`
 	EnableReadFile bool `json:"enable_read_file"`
-	EnableWriteFile  bool `json:"enable_write_file,omitempty"`  // Future
+	EnableWriteFile  bool `json:"enable_write_file,omitempty"`  // Built-in write_file tool
 	EnableApplyPatch bool `json:"enable_apply_patch,omitempty"` // Built-in apply_patch tool
 }
 
@@ -35,6 +35,7 @@ func DefaultToolsConfig() ToolsConfig {
 	return ToolsConfig{
 		EnableShell:      true,
 		EnableReadFile:   true,
+		EnableWriteFile:  true,
 		EnableApplyPatch: true,
 	}
 }

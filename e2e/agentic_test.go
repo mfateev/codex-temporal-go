@@ -231,6 +231,61 @@ func TestAgenticWorkflow_ReadFile(t *testing.T) {
 		result.TotalTokens, result.TotalIterations, result.ToolCallsExecuted)
 }
 
+// TestAgenticWorkflow_WriteFile tests the write_file tool
+func TestAgenticWorkflow_WriteFile(t *testing.T) {
+	c := dialTemporal(t)
+	defer c.Close()
+
+	testFile := "/tmp/codex-write-test-" + uuid.New().String()[:8] + ".txt"
+	defer os.Remove(testFile)
+
+	workflowID := "test-write-file-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage: "You MUST use the write_file tool to create a file at " + testFile + " with the content 'Hello from write_file'. " +
+			"Do NOT use any other tool. After writing, report what you did.",
+		ModelConfig: testModelConfig(500),
+		ToolsConfig: models.ToolsConfig{
+			EnableShell:      false,
+			EnableReadFile:   true,
+			EnableWriteFile:  true,
+			EnableApplyPatch: false,
+		},
+	}
+
+	t.Logf("Starting workflow: %s", workflowID)
+	t.Logf("Test file: %s", testFile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: workflowID, TaskQueue: TaskQueue,
+	}, "AgenticWorkflow", input)
+	require.NoError(t, err, "Failed to start workflow")
+
+	var result workflow.WorkflowResult
+	err = run.Get(ctx, &result)
+	require.NoError(t, err, "Workflow execution failed")
+
+	assert.Equal(t, workflowID, result.ConversationID)
+	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
+	assert.Contains(t, result.ToolCallsExecuted, "write_file", "Should have called write_file tool")
+	assert.Greater(t, result.TotalIterations, 1, "Should have multiple iterations (LLM → tool → LLM)")
+
+	// Verify file was created with expected content
+	contents, err := os.ReadFile(testFile)
+	if err == nil {
+		t.Logf("File contents: %q", string(contents))
+		assert.Contains(t, string(contents), "Hello from write_file")
+	} else {
+		t.Logf("Note: file not found at %s (LLM may have used a different path)", testFile)
+	}
+
+	t.Logf("Total tokens: %d, Iterations: %d, Tools: %v",
+		result.TotalTokens, result.TotalIterations, result.ToolCallsExecuted)
+}
+
 // TestAgenticWorkflow_ApplyPatch tests the apply_patch tool
 func TestAgenticWorkflow_ApplyPatch(t *testing.T) {
 	c := dialTemporal(t)

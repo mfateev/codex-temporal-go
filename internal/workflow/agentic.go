@@ -298,6 +298,10 @@ func buildToolSpecs(config models.ToolsConfig) []tools.ToolSpec {
 		specs = append(specs, tools.NewReadFileToolSpec())
 	}
 
+	if config.EnableWriteFile {
+		specs = append(specs, tools.NewWriteFileToolSpec())
+	}
+
 	if config.EnableApplyPatch {
 		specs = append(specs, tools.NewApplyPatchToolSpec())
 	}

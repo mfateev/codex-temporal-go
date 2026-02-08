@@ -13,6 +13,7 @@ const (
 	DefaultShellTimeoutMs      = 10_000  // 10s — matches Codex default
 	DefaultReadFileTimeoutMs   = 30_000  // 30s
 	DefaultApplyPatchTimeoutMs = 30_000  // 30s
+	DefaultWriteFileTimeoutMs  = 30_000  // 30s
 	DefaultToolTimeoutMs       = 120_000 // 2min — fallback for tools without a default
 )
 
@@ -141,5 +142,31 @@ HunkLine := (" " | "-" | "+") text NEWLINE`,
 			},
 		},
 		DefaultTimeoutMs: DefaultApplyPatchTimeoutMs,
+	}
+}
+
+// NewWriteFileToolSpec creates the specification for the write_file tool.
+//
+// This is a new addition (not ported from Codex Rust, which routes all
+// file writes through apply_patch).
+func NewWriteFileToolSpec() ToolSpec {
+	return ToolSpec{
+		Name:        "write_file",
+		Description: "Create or overwrite a file with the given content. Parent directories are created automatically if they don't exist.",
+		Parameters: []ToolParameter{
+			{
+				Name:        "path",
+				Type:        "string",
+				Description: "The path to the file to write",
+				Required:    true,
+			},
+			{
+				Name:        "content",
+				Type:        "string",
+				Description: "The content to write to the file",
+				Required:    true,
+			},
+		},
+		DefaultTimeoutMs: DefaultWriteFileTimeoutMs,
 	}
 }
