@@ -306,6 +306,10 @@ func buildToolSpecs(config models.ToolsConfig) []tools.ToolSpec {
 		specs = append(specs, tools.NewListDirToolSpec())
 	}
 
+	if config.EnableGrepFiles {
+		specs = append(specs, tools.NewGrepFilesToolSpec())
+	}
+
 	if config.EnableApplyPatch {
 		specs = append(specs, tools.NewApplyPatchToolSpec())
 	}

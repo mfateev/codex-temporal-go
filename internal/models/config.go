@@ -28,6 +28,7 @@ type ToolsConfig struct {
 	EnableReadFile bool `json:"enable_read_file"`
 	EnableWriteFile  bool `json:"enable_write_file,omitempty"`  // Built-in write_file tool
 	EnableListDir    bool `json:"enable_list_dir,omitempty"`    // Built-in list_dir tool
+	EnableGrepFiles  bool `json:"enable_grep_files,omitempty"`  // Built-in grep_files tool
 	EnableApplyPatch bool `json:"enable_apply_patch,omitempty"` // Built-in apply_patch tool
 }
 
@@ -38,6 +39,7 @@ func DefaultToolsConfig() ToolsConfig {
 		EnableReadFile:   true,
 		EnableWriteFile:  true,
 		EnableListDir:    true,
+		EnableGrepFiles:  true,
 		EnableApplyPatch: true,
 	}
 }

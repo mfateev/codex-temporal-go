@@ -15,6 +15,7 @@ const (
 	DefaultApplyPatchTimeoutMs = 30_000  // 30s
 	DefaultWriteFileTimeoutMs  = 30_000  // 30s
 	DefaultListDirTimeoutMs    = 30_000  // 30s
+	DefaultGrepFilesTimeoutMs  = 30_000  // 30s — matches Codex COMMAND_TIMEOUT
 	DefaultToolTimeoutMs       = 120_000 // 2min — fallback for tools without a default
 )
 
@@ -206,5 +207,42 @@ func NewListDirToolSpec() ToolSpec {
 			},
 		},
 		DefaultTimeoutMs: DefaultListDirTimeoutMs,
+	}
+}
+
+// NewGrepFilesToolSpec creates the specification for the grep_files tool.
+//
+// Maps to: codex-rs/core/src/tools/spec.rs create_grep_files_tool
+func NewGrepFilesToolSpec() ToolSpec {
+	return ToolSpec{
+		Name:        "grep_files",
+		Description: "Finds files whose contents match the pattern and lists them by modification time.",
+		Parameters: []ToolParameter{
+			{
+				Name:        "pattern",
+				Type:        "string",
+				Description: "Regular expression pattern to search for.",
+				Required:    true,
+			},
+			{
+				Name:        "include",
+				Type:        "string",
+				Description: "Optional glob that limits which files are searched (e.g. \"*.rs\" or \"*.{ts,tsx}\").",
+				Required:    false,
+			},
+			{
+				Name:        "path",
+				Type:        "string",
+				Description: "Directory or file path to search in. Defaults to the current working directory.",
+				Required:    false,
+			},
+			{
+				Name:        "limit",
+				Type:        "number",
+				Description: "Maximum number of file paths to return (defaults to 100).",
+				Required:    false,
+			},
+		},
+		DefaultTimeoutMs: DefaultGrepFilesTimeoutMs,
 	}
 }

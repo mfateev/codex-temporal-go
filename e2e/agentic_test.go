@@ -281,6 +281,55 @@ func TestAgenticWorkflow_ListDir(t *testing.T) {
 		result.TotalTokens, result.TotalIterations, result.ToolCallsExecuted)
 }
 
+// TestAgenticWorkflow_GrepFiles tests the grep_files tool
+func TestAgenticWorkflow_GrepFiles(t *testing.T) {
+	c := dialTemporal(t)
+	defer c.Close()
+
+	// Create a temporary directory with known contents for the LLM to search.
+	testDir := "/tmp/codex-grep-test-" + uuid.New().String()[:8]
+	require.NoError(t, os.MkdirAll(testDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(testDir, "match.txt"), []byte("hello needle world"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(testDir, "miss.txt"), []byte("no match here"), 0o644))
+	defer os.RemoveAll(testDir)
+
+	workflowID := "test-grep-files-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage: "You MUST use the grep_files tool to search for the pattern 'needle' in the directory " + testDir + ". " +
+			"Do NOT use any other tool. After searching, report which files matched.",
+		ModelConfig: testModelConfig(500),
+		ToolsConfig: models.ToolsConfig{
+			EnableShell:     false,
+			EnableReadFile:  false,
+			EnableGrepFiles: true,
+		},
+	}
+
+	t.Logf("Starting workflow: %s", workflowID)
+	t.Logf("Test dir: %s", testDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	run, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID: workflowID, TaskQueue: TaskQueue,
+	}, "AgenticWorkflow", input)
+	require.NoError(t, err, "Failed to start workflow")
+
+	var result workflow.WorkflowResult
+	err = run.Get(ctx, &result)
+	require.NoError(t, err, "Workflow execution failed")
+
+	assert.Equal(t, workflowID, result.ConversationID)
+	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
+	assert.Contains(t, result.ToolCallsExecuted, "grep_files", "Should have called grep_files tool")
+	assert.Greater(t, result.TotalIterations, 1, "Should have multiple iterations (LLM → tool → LLM)")
+
+	t.Logf("Total tokens: %d, Iterations: %d, Tools: %v",
+		result.TotalTokens, result.TotalIterations, result.ToolCallsExecuted)
+}
+
 // TestAgenticWorkflow_WriteFile tests the write_file tool
 func TestAgenticWorkflow_WriteFile(t *testing.T) {
 	c := dialTemporal(t)
