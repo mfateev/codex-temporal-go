@@ -293,6 +293,33 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ValidatorRejectsAfterShutdown()
 	assert.Contains(s.T(), shutdownErr.Error(), "already shutting down")
 }
 
+// TestMultiTurn_QueryTurnStatus verifies the get_turn_status query handler
+// returns correct phase and stats.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_QueryTurnStatus() {
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Response", 45), nil).Once()
+
+	// Query turn status after first turn completes — should be waiting_for_input
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+
+		assert.Equal(s.T(), PhaseWaitingForInput, status.Phase)
+		assert.NotEmpty(s.T(), status.CurrentTurnID)
+		assert.Equal(s.T(), 45, status.TotalTokens)
+		assert.Equal(s.T(), 1, status.TurnCount)
+		assert.Empty(s.T(), status.ToolsInFlight)
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 3)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+}
+
 // TestMultiTurn_TurnBoundaries verifies TurnStarted/TurnComplete markers
 // appear in history.
 func (s *AgenticWorkflowTestSuite) TestMultiTurn_TurnBoundaries() {
@@ -460,6 +487,32 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ToolCallsWithinTurn() {
 	assert.Equal(s.T(), "shutdown", result.EndReason)
 	assert.Equal(s.T(), 70, result.TotalTokens) // 30 + 40
 	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+}
+
+// TestMultiTurn_SeqFieldsAssigned verifies that Seq fields are monotonically
+// increasing on conversation items returned by the query handler.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_SeqFieldsAssigned() {
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 50), nil).Once()
+
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetConversationItems)
+		require.NoError(s.T(), err)
+
+		var items []models.ConversationItem
+		require.NoError(s.T(), result.Get(&items))
+
+		// Verify Seq is monotonically increasing starting from 0
+		require.GreaterOrEqual(s.T(), len(items), 3, "Should have at least TurnStarted + UserMessage + AssistantMessage")
+		for i, item := range items {
+			assert.Equal(s.T(), i, item.Seq, "Item %d should have Seq=%d", i, i)
+		}
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 3)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+	require.True(s.T(), s.env.IsWorkflowCompleted())
 }
 
 // TestAgenticWorkflowContinued_InitHistory verifies initHistory restores history

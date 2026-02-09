@@ -88,6 +88,23 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 		logger.Error("Failed to register get_conversation_items query handler", "error", err)
 	}
 
+	// Query: get_turn_status
+	// Returns current turn phase and stats for CLI polling.
+	err = workflow.SetQueryHandler(ctx, QueryGetTurnStatus, func() (TurnStatus, error) {
+		turnCount, _ := s.History.GetTurnCount()
+		return TurnStatus{
+			Phase:          s.Phase,
+			CurrentTurnID:  s.CurrentTurnID,
+			ToolsInFlight:  s.ToolsInFlight,
+			IterationCount: s.IterationCount,
+			TotalTokens:    s.TotalTokens,
+			TurnCount:      turnCount,
+		}, nil
+	})
+	if err != nil {
+		logger.Error("Failed to register get_turn_status query handler", "error", err)
+	}
+
 	// Update: user_input
 	// Maps to: Codex Op::UserInput / turn/start
 	err = workflow.SetUpdateHandlerWithOptions(
@@ -207,6 +224,8 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context) (WorkflowResult, e
 	for {
 		// Wait for pending user input (first turn has it set already)
 		if !s.PendingUserInput && !s.ShutdownRequested {
+			s.Phase = PhaseWaitingForInput
+			s.ToolsInFlight = nil
 			logger.Info("Waiting for user input or shutdown")
 			timedOut, err := awaitWithIdleTimeout(ctx, func() bool {
 				return s.PendingUserInput || s.ShutdownRequested
@@ -256,6 +275,8 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context) (WorkflowResult, e
 			})
 		}
 
+		s.Phase = PhaseWaitingForInput
+		s.ToolsInFlight = nil
 		logger.Info("Turn complete, waiting for next input", "turn_id", s.CurrentTurnID)
 	}
 }
@@ -314,6 +335,10 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 			},
 		}
 		llmCtx := workflow.WithActivityOptions(ctx, llmActivityOptions)
+
+		// Set phase to LLM calling
+		s.Phase = PhaseLLMCalling
+		s.ToolsInFlight = nil
 
 		// Call LLM Activity
 		llmInput := activities.LLMActivityInput{
@@ -380,12 +405,22 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 
 		// Execute tools if present (parallel execution)
 		if len(functionCalls) > 0 {
+			// Set phase to tool executing with names of tools in flight
+			s.Phase = PhaseToolExecuting
+			toolNames := make([]string, len(functionCalls))
+			for i, fc := range functionCalls {
+				toolNames[i] = fc.Name
+			}
+			s.ToolsInFlight = toolNames
 			logger.Info("Executing tools", "count", len(functionCalls))
 
 			toolResults, err := executeToolsInParallel(ctx, functionCalls, s.ToolSpecs, s.Config.Cwd)
 			if err != nil {
 				return false, fmt.Errorf("failed to execute tools: %w", err)
 			}
+
+			// Clear tools in flight
+			s.ToolsInFlight = nil
 
 			// Track which tools were executed
 			for _, fc := range functionCalls {

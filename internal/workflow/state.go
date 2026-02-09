@@ -17,6 +17,10 @@ const (
 	// Maps to: Codex ContextManager::raw_items()
 	QueryGetConversationItems = "get_conversation_items"
 
+	// QueryGetTurnStatus returns the current turn phase and stats.
+	// Used by the interactive CLI to drive spinner/state transitions.
+	QueryGetTurnStatus = "get_turn_status"
+
 	// UpdateUserInput submits a new user message to the workflow.
 	// Maps to: Codex Op::UserInput / turn/start
 	UpdateUserInput = "user_input"
@@ -29,6 +33,25 @@ const (
 	// Maps to: Codex Op::Shutdown
 	UpdateShutdown = "shutdown"
 )
+
+// TurnPhase indicates the current phase of the workflow turn.
+type TurnPhase string
+
+const (
+	PhaseWaitingForInput TurnPhase = "waiting_for_input"
+	PhaseLLMCalling      TurnPhase = "llm_calling"
+	PhaseToolExecuting   TurnPhase = "tool_executing"
+)
+
+// TurnStatus is the response from the get_turn_status query.
+type TurnStatus struct {
+	Phase          TurnPhase `json:"phase"`
+	CurrentTurnID  string    `json:"current_turn_id"`
+	ToolsInFlight  []string  `json:"tools_in_flight,omitempty"`
+	IterationCount int       `json:"iteration_count"`
+	TotalTokens    int       `json:"total_tokens"`
+	TurnCount      int       `json:"turn_count"`
+}
 
 // WorkflowInput is the initial input to start a conversation.
 //
@@ -93,6 +116,10 @@ type SessionState struct {
 	ShutdownRequested bool   `json:"shutdown_requested"`   // Session shutdown requested
 	Interrupted       bool   `json:"interrupted"`          // Current turn interrupted
 	CurrentTurnID     string `json:"current_turn_id"`      // Active turn ID
+
+	// Turn phase tracking (for CLI polling)
+	Phase         TurnPhase `json:"phase"`
+	ToolsInFlight []string  `json:"tools_in_flight,omitempty"`
 
 	// Cumulative stats (persist across ContinueAsNew)
 	TotalTokens       int      `json:"total_tokens"`

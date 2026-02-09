@@ -40,6 +40,10 @@ type FunctionCallOutputPayload struct {
 type ConversationItem struct {
 	Type ConversationItemType `json:"type"`
 
+	// Seq is a monotonically increasing sequence number assigned by history.
+	// Used by the CLI to track which items have already been rendered.
+	Seq int `json:"seq"`
+
 	// UserMessage / AssistantMessage fields
 	Content string `json:"content,omitempty"`
 

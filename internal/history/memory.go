@@ -23,9 +23,11 @@ func NewInMemoryHistory() *InMemoryHistory {
 }
 
 // AddItem adds a new conversation item to history.
+// Assigns a monotonically increasing Seq number before appending.
 func (h *InMemoryHistory) AddItem(item models.ConversationItem) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	item.Seq = len(h.items)
 	h.items = append(h.items, item)
 	return nil
 }
