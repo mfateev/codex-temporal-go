@@ -20,6 +20,7 @@ import (
 	"go.temporal.io/sdk/client"
 
 	"github.com/mfateev/codex-temporal-go/internal/cli"
+	"github.com/mfateev/codex-temporal-go/internal/models"
 )
 
 func main() {
@@ -33,6 +34,7 @@ func main() {
 	noColor := flag.Bool("no-color", false, "Disable colored output")
 	enableShell := flag.Bool("enable-shell", true, "Enable shell tool")
 	enableRead := flag.Bool("enable-read-file", true, "Enable read_file tool")
+	fullAuto := flag.Bool("full-auto", false, "Auto-approve all tool calls without prompting")
 	flag.Parse()
 
 	// Support both -m and --message
@@ -47,6 +49,11 @@ func main() {
 		sess = *workflowID
 	}
 
+	approvalMode := models.ApprovalUnlessTrusted
+	if *fullAuto {
+		approvalMode = models.ApprovalNever
+	}
+
 	config := cli.Config{
 		TemporalHost: *temporalHost,
 		Session:      sess,
@@ -56,6 +63,7 @@ func main() {
 		NoColor:      *noColor,
 		EnableShell:  *enableShell,
 		EnableRead:   *enableRead,
+		ApprovalMode: approvalMode,
 	}
 
 	app := cli.NewApp(config)

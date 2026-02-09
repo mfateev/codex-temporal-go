@@ -5,7 +5,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.temporal.io/api/serviceerror"
+
+	"github.com/mfateev/codex-temporal-go/internal/workflow"
 )
 
 func TestClassifyPollError_NotFound(t *testing.T) {
@@ -37,4 +40,145 @@ func TestClassifyPollError_WrappedNotFound(t *testing.T) {
 	inner := serviceerror.NewNotFound("workflow not found")
 	err := fmt.Errorf("query failed: %w", inner)
 	assert.Equal(t, pollErrorCompleted, classifyPollError(err))
+}
+
+// --- Approval input handling tests ---
+
+func TestHandleApprovalInput_Yes(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+			{CallID: "c2", ToolName: "write_file"},
+		},
+	}
+	resp := app.handleApprovalInput("y")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c1", "c2"}, resp.Approved)
+	assert.Nil(t, resp.Denied)
+}
+
+func TestHandleApprovalInput_YesFull(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	resp := app.handleApprovalInput("yes")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c1"}, resp.Approved)
+}
+
+func TestHandleApprovalInput_No(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	resp := app.handleApprovalInput("n")
+	require.NotNil(t, resp)
+	assert.Nil(t, resp.Approved)
+	assert.Equal(t, []string{"c1"}, resp.Denied)
+}
+
+func TestHandleApprovalInput_NoFull(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	resp := app.handleApprovalInput("no")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c1"}, resp.Denied)
+}
+
+func TestHandleApprovalInput_Always(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	assert.False(t, app.autoApprove)
+	resp := app.handleApprovalInput("a")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c1"}, resp.Approved)
+	assert.True(t, app.autoApprove, "autoApprove should be set after 'always'")
+}
+
+func TestHandleApprovalInput_AlwaysFull(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	resp := app.handleApprovalInput("always")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c1"}, resp.Approved)
+	assert.True(t, app.autoApprove)
+}
+
+func TestHandleApprovalInput_Invalid(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	resp := app.handleApprovalInput("maybe")
+	assert.Nil(t, resp)
+}
+
+func TestHandleApprovalInput_CaseInsensitive(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	resp := app.handleApprovalInput("YES")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c1"}, resp.Approved)
+}
+
+func TestHandleApprovalInput_WithWhitespace(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	resp := app.handleApprovalInput("  y  ")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c1"}, resp.Approved)
+}
+
+func TestFormatApprovalDetail_Shell(t *testing.T) {
+	detail := formatApprovalDetail("shell", `{"command": "rm -rf /tmp"}`)
+	assert.Equal(t, "Command: rm -rf /tmp", detail)
+}
+
+func TestFormatApprovalDetail_WriteFile(t *testing.T) {
+	detail := formatApprovalDetail("write_file", `{"file_path": "/home/user/test.txt", "content": "hello"}`)
+	assert.Equal(t, "Path: /home/user/test.txt", detail)
+}
+
+func TestFormatApprovalDetail_ApplyPatch(t *testing.T) {
+	detail := formatApprovalDetail("apply_patch", `{"file_path": "/home/user/test.txt"}`)
+	assert.Equal(t, "Path: /home/user/test.txt", detail)
+}
+
+func TestFormatApprovalDetail_UnknownTool(t *testing.T) {
+	detail := formatApprovalDetail("custom_tool", `{"foo": "bar"}`)
+	assert.Equal(t, `Args: {"foo": "bar"}`, detail)
+}
+
+func TestFormatApprovalDetail_BadJSON(t *testing.T) {
+	detail := formatApprovalDetail("shell", `{bad json`)
+	assert.Contains(t, detail, "Args:")
+}
+
+func TestFormatApprovalDetail_LongArgs(t *testing.T) {
+	longArg := ""
+	for i := 0; i < 400; i++ {
+		longArg += "x"
+	}
+	detail := formatApprovalDetail("custom_tool", longArg)
+	assert.Contains(t, detail, "...")
+	assert.LessOrEqual(t, len(detail), 310) // "Args: " + 300 + "..."
 }

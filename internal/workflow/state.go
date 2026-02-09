@@ -32,6 +32,10 @@ const (
 	// UpdateShutdown ends the session.
 	// Maps to: Codex Op::Shutdown
 	UpdateShutdown = "shutdown"
+
+	// UpdateApprovalResponse submits the user's tool approval decision.
+	// Maps to: Codex approval flow (AskForApproval)
+	UpdateApprovalResponse = "approval_response"
 )
 
 // TurnPhase indicates the current phase of the workflow turn.
@@ -41,16 +45,18 @@ const (
 	PhaseWaitingForInput TurnPhase = "waiting_for_input"
 	PhaseLLMCalling      TurnPhase = "llm_calling"
 	PhaseToolExecuting   TurnPhase = "tool_executing"
+	PhaseApprovalPending TurnPhase = "approval_pending"
 )
 
 // TurnStatus is the response from the get_turn_status query.
 type TurnStatus struct {
-	Phase          TurnPhase `json:"phase"`
-	CurrentTurnID  string    `json:"current_turn_id"`
-	ToolsInFlight  []string  `json:"tools_in_flight,omitempty"`
-	IterationCount int       `json:"iteration_count"`
-	TotalTokens    int       `json:"total_tokens"`
-	TurnCount      int       `json:"turn_count"`
+	Phase            TurnPhase         `json:"phase"`
+	CurrentTurnID    string            `json:"current_turn_id"`
+	ToolsInFlight    []string          `json:"tools_in_flight,omitempty"`
+	PendingApprovals []PendingApproval `json:"pending_approvals,omitempty"`
+	IterationCount   int               `json:"iteration_count"`
+	TotalTokens      int               `json:"total_tokens"`
+	TurnCount        int               `json:"turn_count"`
 }
 
 // WorkflowInput is the initial input to start a conversation.
@@ -96,6 +102,24 @@ type ShutdownResponse struct {
 	Acknowledged bool `json:"acknowledged"`
 }
 
+// PendingApproval describes a tool call awaiting user approval.
+// Maps to: Codex approval flow (tool call needing confirmation)
+type PendingApproval struct {
+	CallID    string `json:"call_id"`
+	ToolName  string `json:"tool_name"`
+	Arguments string `json:"arguments"` // Raw JSON string of arguments
+}
+
+// ApprovalResponse is the user's decision on pending tool approvals.
+// Maps to: Codex approval flow response
+type ApprovalResponse struct {
+	Approved []string `json:"approved"` // CallIDs the user approved
+	Denied   []string `json:"denied"`   // CallIDs the user denied
+}
+
+// ApprovalResponseAck is returned by the approval_response Update after acceptance.
+type ApprovalResponseAck struct{}
+
 // SessionState is passed through ContinueAsNew.
 // Uses ContextManager interface to allow pluggable storage backends.
 //
@@ -118,8 +142,13 @@ type SessionState struct {
 	CurrentTurnID     string `json:"current_turn_id"`      // Active turn ID
 
 	// Turn phase tracking (for CLI polling)
-	Phase         TurnPhase `json:"phase"`
-	ToolsInFlight []string  `json:"tools_in_flight,omitempty"`
+	Phase            TurnPhase         `json:"phase"`
+	ToolsInFlight    []string          `json:"tools_in_flight,omitempty"`
+	PendingApprovals []PendingApproval `json:"pending_approvals,omitempty"`
+
+	// Approval transient state (not serialized — lost on ContinueAsNew)
+	ApprovalReceived bool              `json:"-"`
+	ApprovalResponse *ApprovalResponse `json:"-"`
 
 	// Cumulative stats (persist across ContinueAsNew)
 	TotalTokens       int      `json:"total_tokens"`

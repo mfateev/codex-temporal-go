@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/mfateev/codex-temporal-go/internal/activities"
+	"github.com/mfateev/codex-temporal-go/internal/command_safety"
 	"github.com/mfateev/codex-temporal-go/internal/history"
 	"github.com/mfateev/codex-temporal-go/internal/models"
 	"github.com/mfateev/codex-temporal-go/internal/tools"
@@ -93,12 +94,13 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	err = workflow.SetQueryHandler(ctx, QueryGetTurnStatus, func() (TurnStatus, error) {
 		turnCount, _ := s.History.GetTurnCount()
 		return TurnStatus{
-			Phase:          s.Phase,
-			CurrentTurnID:  s.CurrentTurnID,
-			ToolsInFlight:  s.ToolsInFlight,
-			IterationCount: s.IterationCount,
-			TotalTokens:    s.TotalTokens,
-			TurnCount:      turnCount,
+			Phase:            s.Phase,
+			CurrentTurnID:    s.CurrentTurnID,
+			ToolsInFlight:    s.ToolsInFlight,
+			PendingApprovals: s.PendingApprovals,
+			IterationCount:   s.IterationCount,
+			TotalTokens:      s.TotalTokens,
+			TurnCount:        turnCount,
 		}, nil
 	})
 	if err != nil {
@@ -204,6 +206,29 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	)
 	if err != nil {
 		logger.Error("Failed to register shutdown update handler", "error", err)
+	}
+
+	// Update: approval_response
+	// Maps to: Codex approval flow (user approves/denies tool calls)
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdateApprovalResponse,
+		func(ctx workflow.Context, resp ApprovalResponse) (ApprovalResponseAck, error) {
+			s.ApprovalResponse = &resp
+			s.ApprovalReceived = true
+			return ApprovalResponseAck{}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, resp ApprovalResponse) error {
+				if s.Phase != PhaseApprovalPending {
+					return fmt.Errorf("no approval pending")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register approval_response update handler", "error", err)
 	}
 }
 
@@ -412,6 +437,51 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 
 		// Execute tools if present (parallel execution)
 		if len(functionCalls) > 0 {
+			// Classify which tools need user approval
+			needsApproval := classifyToolsForApproval(functionCalls, s.Config.ApprovalMode)
+
+			if len(needsApproval) > 0 {
+				// Set approval pending state
+				s.Phase = PhaseApprovalPending
+				s.PendingApprovals = needsApproval
+				s.ApprovalReceived = false
+				s.ApprovalResponse = nil
+
+				logger.Info("Waiting for tool approval", "count", len(needsApproval))
+
+				// Wait for user approval or interrupt (no timeout — blocks until response)
+				err := workflow.Await(ctx, func() bool {
+					return s.ApprovalReceived || s.Interrupted || s.ShutdownRequested
+				})
+				if err != nil {
+					return false, fmt.Errorf("approval await failed: %w", err)
+				}
+
+				s.PendingApprovals = nil
+
+				if s.Interrupted || s.ShutdownRequested {
+					logger.Info("Approval wait interrupted")
+					return false, nil
+				}
+
+				// Apply approval decision — filter out denied tools
+				var deniedResults []models.ConversationItem
+				functionCalls, deniedResults = applyApprovalDecision(functionCalls, s.ApprovalResponse)
+
+				// Add denied results to history so the LLM sees them
+				for _, dr := range deniedResults {
+					if err := s.History.AddItem(dr); err != nil {
+						return false, fmt.Errorf("failed to add denied result: %w", err)
+					}
+				}
+
+				// If all tools were denied, continue loop for next LLM iteration
+				if len(functionCalls) == 0 {
+					s.IterationCount++
+					continue
+				}
+			}
+
 			// Set phase to tool executing with names of tools in flight
 			s.Phase = PhaseToolExecuting
 			toolNames := make([]string, len(functionCalls))
@@ -666,6 +736,91 @@ func resolveToolTimeout(specByName map[string]tools.ToolSpec, toolName string, a
 
 	// 3. Global fallback.
 	return time.Duration(tools.DefaultToolTimeoutMs) * time.Millisecond
+}
+
+// classifyToolsForApproval determines which tool calls need user approval.
+// In "never" mode (or empty/unset for backward compat), returns nil — all auto-approved.
+// In "unless-trusted" mode, returns tools that are mutating.
+//
+// Maps to: Codex AskForApproval policy check before tool dispatch
+func classifyToolsForApproval(functionCalls []models.ConversationItem, mode models.ApprovalMode) []PendingApproval {
+	// Empty/unset mode or "never" → auto-approve all (backward compat)
+	if mode == "" || mode == models.ApprovalNever {
+		return nil
+	}
+
+	var pending []PendingApproval
+	for _, fc := range functionCalls {
+		if toolNeedsApproval(fc.Name, fc.Arguments) {
+			pending = append(pending, PendingApproval{
+				CallID:    fc.CallID,
+				ToolName:  fc.Name,
+				Arguments: fc.Arguments,
+			})
+		}
+	}
+	return pending
+}
+
+// toolNeedsApproval returns true if a tool call is mutating and needs user approval.
+func toolNeedsApproval(toolName, arguments string) bool {
+	switch toolName {
+	case "read_file", "list_dir", "grep_files":
+		return false // Read-only tools
+	case "write_file", "apply_patch":
+		return true // Always mutating
+	case "shell":
+		return !isShellCommandSafe(arguments)
+	default:
+		return true // Unknown tools need approval
+	}
+}
+
+// isShellCommandSafe checks if a shell command is safe using command_safety.
+func isShellCommandSafe(arguments string) bool {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return false // Can't parse → needs approval
+	}
+	cmd, ok := args["command"].(string)
+	if !ok || cmd == "" {
+		return false
+	}
+	return command_safety.IsKnownSafeCommand([]string{"bash", "-c", cmd})
+}
+
+// applyApprovalDecision filters function calls based on the approval response.
+// Returns approved function calls and denied result items for history.
+func applyApprovalDecision(functionCalls []models.ConversationItem, resp *ApprovalResponse) ([]models.ConversationItem, []models.ConversationItem) {
+	if resp == nil {
+		return functionCalls, nil
+	}
+
+	deniedSet := make(map[string]bool, len(resp.Denied))
+	for _, id := range resp.Denied {
+		deniedSet[id] = true
+	}
+
+	var approved []models.ConversationItem
+	var denied []models.ConversationItem
+
+	for _, fc := range functionCalls {
+		if deniedSet[fc.CallID] {
+			falseVal := false
+			denied = append(denied, models.ConversationItem{
+				Type:   models.ItemTypeFunctionCallOutput,
+				CallID: fc.CallID,
+				Output: &models.FunctionCallOutputPayload{
+					Content: "User denied execution of this tool call.",
+					Success: &falseVal,
+				},
+			})
+		} else {
+			approved = append(approved, fc)
+		}
+	}
+
+	return approved, denied
 }
 
 // toInt64 converts a JSON-decoded number (float64) to int64.

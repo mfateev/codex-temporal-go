@@ -103,6 +103,8 @@ func PhaseMessage(phase workflow.TurnPhase, toolsInFlight []string) string {
 			return fmt.Sprintf("Running %s...", toolsInFlight[0])
 		}
 		return "Running tool..."
+	case workflow.PhaseApprovalPending:
+		return "Waiting for approval..."
 	default:
 		return "Working..."
 	}

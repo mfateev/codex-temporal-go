@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +34,7 @@ const (
 	StateStartup State = iota
 	StateInput
 	StateWatching
+	StateApproval // Waiting for user to approve/deny tool calls
 	StateShutdown
 )
 
@@ -47,6 +49,7 @@ type Config struct {
 	EnableShell  bool
 	EnableRead   bool
 	Cwd          string
+	ApprovalMode models.ApprovalMode
 }
 
 // App is the interactive CLI application.
@@ -72,6 +75,10 @@ type App struct {
 
 	// Consecutive poll errors (reset on success)
 	consecutiveErrors int
+
+	// Approval state
+	pendingApprovals []workflow.PendingApproval
+	autoApprove      bool // Set by "always" response; auto-approves future requests
 
 	// Readline instance
 	rl *readline.Instance
@@ -170,6 +177,7 @@ func (a *App) startWorkflow() error {
 				EnableShell:    a.config.EnableShell,
 				EnableReadFile: a.config.EnableRead,
 			},
+			ApprovalMode:  a.config.ApprovalMode,
 			Cwd:           cwd,
 			SessionSource: "interactive-cli",
 		},
@@ -225,9 +233,13 @@ func (a *App) resumeWorkflow() error {
 	}
 
 	// Determine initial state based on turn status
-	if result.Status.Phase == workflow.PhaseWaitingForInput {
+	switch result.Status.Phase {
+	case workflow.PhaseWaitingForInput:
 		a.state = StateInput
-	} else {
+	case workflow.PhaseApprovalPending:
+		a.state = StateApproval
+		a.renderApprovalPrompt(result.Status.PendingApprovals)
+	default:
 		a.state = StateWatching
 	}
 
@@ -276,6 +288,8 @@ func (a *App) mainLoop() error {
 		a.spinner.Start("Thinking...")
 	case StateInput:
 		startInput()
+	case StateApproval:
+		startInput()
 	}
 
 	defer stopPolling()
@@ -283,6 +297,25 @@ func (a *App) mainLoop() error {
 	for {
 		select {
 		case line := <-a.inputCh:
+			// Handle approval input separately
+			if a.state == StateApproval {
+				response := a.handleApprovalInput(strings.TrimSpace(line))
+				if response != nil {
+					if err := a.sendApprovalResponse(*response); err != nil {
+						fmt.Fprintf(os.Stderr, "Error sending approval: %v\n", err)
+					}
+					a.pendingApprovals = nil
+					a.state = StateWatching
+					a.spinner.Start("Running tools...")
+					startPolling()
+				} else {
+					// Invalid input, re-prompt
+					fmt.Fprintf(os.Stderr, "Please enter y(es), n(o), or a(lways): ")
+					startInput()
+				}
+				continue
+			}
+
 			line = strings.TrimSpace(line)
 			if line == "" {
 				startInput()
@@ -343,6 +376,26 @@ func (a *App) mainLoop() error {
 
 			// Update spinner message based on phase
 			a.spinner.SetMessage(PhaseMessage(result.Status.Phase, result.Status.ToolsInFlight))
+
+			// Check for approval pending
+			if result.Status.Phase == workflow.PhaseApprovalPending &&
+				len(result.Status.PendingApprovals) > 0 && a.state == StateWatching {
+				if a.autoApprove {
+					// Auto-approve without prompting (user chose "always")
+					callIDs := make([]string, len(result.Status.PendingApprovals))
+					for i, ap := range result.Status.PendingApprovals {
+						callIDs[i] = ap.CallID
+					}
+					_ = a.sendApprovalResponse(workflow.ApprovalResponse{Approved: callIDs})
+					continue
+				}
+				a.spinner.Stop()
+				stopPolling()
+				a.state = StateApproval
+				a.renderApprovalPrompt(result.Status.PendingApprovals)
+				startInput()
+				continue
+			}
 
 			// Check if turn is complete
 			if a.isTurnComplete(result.Items) && result.Status.Phase == workflow.PhaseWaitingForInput {
@@ -468,6 +521,16 @@ func (a *App) handleInterrupt(startPolling, stopPolling, startInput func()) {
 		// Stay in watching mode, wait for turn_complete(interrupted)
 		a.spinner.Start("Interrupting...")
 
+	case StateApproval:
+		// Ctrl+C during approval — interrupt the workflow, skip all tools
+		a.lastInterruptTime = now
+		fmt.Fprintf(os.Stderr, "\nInterrupting...\n")
+		_ = a.sendInterrupt()
+		a.pendingApprovals = nil
+		a.state = StateWatching
+		a.spinner.Start("Interrupting...")
+		startPolling()
+
 	case StateInput:
 		// Ctrl+C during input — disconnect (workflow stays alive)
 		a.printResumeHint()
@@ -519,6 +582,84 @@ func (a *App) waitForCompletion() error {
 	fmt.Fprintf(os.Stderr, "Session ended. Tokens: %d, Tools: %d\n",
 		result.TotalTokens, len(result.ToolCallsExecuted))
 	return nil
+}
+
+func (a *App) renderApprovalPrompt(approvals []workflow.PendingApproval) {
+	a.pendingApprovals = approvals
+	fmt.Fprintf(os.Stderr, "\n")
+	for _, ap := range approvals {
+		fmt.Fprintf(os.Stderr, "  %sTool:%s %s\n",
+			a.renderer.color(colorYellow), a.renderer.color(colorReset), ap.ToolName)
+		fmt.Fprintf(os.Stderr, "  %s\n\n", formatApprovalDetail(ap.ToolName, ap.Arguments))
+	}
+	fmt.Fprintf(os.Stderr, "Allow? [y]es / [n]o / [a]lways: ")
+}
+
+// handleApprovalInput parses the user's response to an approval prompt.
+// Returns nil if the input is not recognized.
+func (a *App) handleApprovalInput(line string) *workflow.ApprovalResponse {
+	line = strings.ToLower(strings.TrimSpace(line))
+
+	callIDs := make([]string, len(a.pendingApprovals))
+	for i, ap := range a.pendingApprovals {
+		callIDs[i] = ap.CallID
+	}
+
+	switch line {
+	case "y", "yes":
+		return &workflow.ApprovalResponse{Approved: callIDs}
+	case "n", "no":
+		return &workflow.ApprovalResponse{Denied: callIDs}
+	case "a", "always":
+		a.autoApprove = true
+		return &workflow.ApprovalResponse{Approved: callIDs}
+	default:
+		return nil
+	}
+}
+
+func (a *App) sendApprovalResponse(resp workflow.ApprovalResponse) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	updateHandle, err := a.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   a.workflowID,
+		UpdateName:   workflow.UpdateApprovalResponse,
+		Args:         []interface{}{resp},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		return err
+	}
+
+	var ack workflow.ApprovalResponseAck
+	return updateHandle.Get(ctx, &ack)
+}
+
+// formatApprovalDetail extracts a human-readable detail string from tool arguments.
+func formatApprovalDetail(toolName, arguments string) string {
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(arguments), &args) == nil {
+		switch toolName {
+		case "shell":
+			if cmd, ok := args["command"].(string); ok {
+				return "Command: " + cmd
+			}
+		case "write_file":
+			if path, ok := args["file_path"].(string); ok {
+				return "Path: " + path
+			}
+		case "apply_patch":
+			if path, ok := args["file_path"].(string); ok {
+				return "Path: " + path
+			}
+		}
+	}
+	display := arguments
+	if len(display) > 300 {
+		display = display[:300] + "..."
+	}
+	return "Args: " + display
 }
 
 func (a *App) printResumeHint() {

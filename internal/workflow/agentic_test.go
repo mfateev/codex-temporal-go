@@ -657,5 +657,682 @@ func TestContextOverflow_CompactsBeforeCAN(t *testing.T) {
 	assert.Equal(t, 2, newTurnCount)
 }
 
+// --- Approval gate tests ---
+
+// testInputWithApproval returns a WorkflowInput with ApprovalMode set.
+func testInputWithApproval(message string, mode models.ApprovalMode) WorkflowInput {
+	input := testInput(message)
+	input.Config.ApprovalMode = mode
+	return input
+}
+
+// TestMultiTurn_ApprovalGate_Approve verifies that in unless-trusted mode,
+// a mutating tool call triggers approval_pending and proceeds after approval.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_Approve() {
+	// LLM returns a mutating shell command (rm -rf)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-rm",
+					Name:      "shell",
+					Arguments: `{"command": "rm -rf /tmp/test"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	// Tool execution after approval
+	trueVal := true
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.Anything).
+		Return(activities.ToolActivityOutput{
+			CallID:  "call-rm",
+			Content: "",
+			Success: &trueVal,
+		}, nil).Once()
+
+	// Second LLM call after tool result
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Done removing files.", 40), nil).Once()
+
+	// Send approval after a delay (simulating user approving)
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateApprovalResponse, "approval-1", noopCallback(),
+			ApprovalResponse{Approved: []string{"call-rm"}})
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 4)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("Delete /tmp/test", models.ApprovalUnlessTrusted))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Equal(s.T(), 70, result.TotalTokens) // 30 + 40
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+}
+
+// TestMultiTurn_ApprovalGate_Deny verifies that denying a tool call
+// sends a denial result to the LLM and does not execute the tool.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_Deny() {
+	// LLM returns a mutating shell command
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-rm",
+					Name:      "shell",
+					Arguments: `{"command": "rm -rf /tmp/test"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	// After denial, LLM sees the denial message and responds
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("OK, I won't delete those files.", 25), nil).Once()
+
+	// NOTE: No ExecuteTool mock — tool should NOT be called
+
+	// Send denial after a delay
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateApprovalResponse, "approval-1", noopCallback(),
+			ApprovalResponse{Denied: []string{"call-rm"}})
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 4)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("Delete /tmp/test", models.ApprovalUnlessTrusted))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Equal(s.T(), 55, result.TotalTokens) // 30 + 25
+	// Tool should NOT be in executed list
+	assert.NotContains(s.T(), result.ToolCallsExecuted, "shell")
+}
+
+// TestMultiTurn_ApprovalGate_SafeCommand verifies that safe (read-only) commands
+// skip the approval gate entirely in unless-trusted mode.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_SafeCommand() {
+	// LLM returns a safe shell command (ls)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-ls",
+					Name:      "shell",
+					Arguments: `{"command": "ls -la"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	// Tool executes without approval
+	trueVal := true
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.Anything).
+		Return(activities.ToolActivityOutput{
+			CallID:  "call-ls",
+			Content: "file1.txt\nfile2.txt\n",
+			Success: &trueVal,
+		}, nil).Once()
+
+	// Second LLM call
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Found 2 files.", 20), nil).Once()
+
+	// No approval callback needed — should execute immediately
+
+	s.sendShutdown(time.Second * 3)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("List files", models.ApprovalUnlessTrusted))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+}
+
+// TestMultiTurn_ApprovalGate_NeverMode verifies that in "never" mode,
+// all tools are auto-approved without any approval gate.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_NeverMode() {
+	// LLM returns a mutating shell command — should still auto-execute
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-rm",
+					Name:      "shell",
+					Arguments: `{"command": "rm -rf /tmp/test"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	// Tool executes without approval
+	trueVal := true
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.Anything).
+		Return(activities.ToolActivityOutput{
+			CallID:  "call-rm",
+			Content: "",
+			Success: &trueVal,
+		}, nil).Once()
+
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Deleted.", 20), nil).Once()
+
+	// No approval callback — should auto-execute in "never" mode
+
+	s.sendShutdown(time.Second * 3)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("Delete /tmp/test", models.ApprovalNever))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+}
+
+// TestMultiTurn_ApprovalGate_BackwardCompat verifies that empty ApprovalMode
+// (from old clients) auto-approves all tools (backward compat).
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_BackwardCompat() {
+	// LLM returns a mutating command — no approval mode set
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-rm",
+					Name:      "shell",
+					Arguments: `{"command": "rm -rf /tmp/test"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	trueVal := true
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.Anything).
+		Return(activities.ToolActivityOutput{
+			CallID:  "call-rm",
+			Content: "",
+			Success: &trueVal,
+		}, nil).Once()
+
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Done.", 20), nil).Once()
+
+	s.sendShutdown(time.Second * 3)
+
+	// Use testInput (no ApprovalMode set — defaults to empty string)
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Delete /tmp/test"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+}
+
+// TestMultiTurn_ApprovalGate_InterruptDuringApproval verifies that interrupting
+// during approval wait skips all tools.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_InterruptDuringApproval() {
+	// LLM returns a mutating shell command
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-rm",
+					Name:      "shell",
+					Arguments: `{"command": "rm -rf /tmp/test"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	// NOTE: No ExecuteTool mock — tool should NOT be called
+
+	// Second turn after interrupt + new user input
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("OK, let me try something else.", 25), nil).Once()
+
+	// Send interrupt instead of approval
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateInterrupt, "interrupt-1", noopCallback(), InterruptRequest{})
+	}, time.Second*2)
+
+	// Send new user input after interrupt
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateUserInput, "input-2", noopCallback(),
+			UserInput{Content: "Try something else"})
+	}, time.Second*3)
+
+	s.sendShutdown(time.Second * 5)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("Delete /tmp/test", models.ApprovalUnlessTrusted))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	// rm should NOT be in executed list (was interrupted)
+	assert.NotContains(s.T(), result.ToolCallsExecuted, "shell")
+}
+
+// TestMultiTurn_ApprovalGate_ValidatorRejectsWhenNotPending verifies that
+// sending an approval response when no approval is pending is rejected.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_ValidatorRejectsWhenNotPending() {
+	// Simple LLM response with no tool calls
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 50), nil).Once()
+
+	// Try to send approval when none is pending
+	var rejected bool
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateApprovalResponse, "approval-1", &testsuite.TestUpdateCallback{
+			OnAccept: func() {
+				s.Fail("approval should not be accepted when no approval pending")
+			},
+			OnReject: func(err error) {
+				assert.Contains(s.T(), err.Error(), "no approval pending")
+				rejected = true
+			},
+			OnComplete: func(interface{}, error) {},
+		}, ApprovalResponse{Approved: []string{"call-1"}})
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 3)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	assert.True(s.T(), rejected, "Approval should have been rejected when not pending")
+}
+
+// --- Unit tests for classification functions ---
+
+func TestClassifyToolsForApproval_NeverMode(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /"}`},
+	}
+	result := classifyToolsForApproval(calls, models.ApprovalNever)
+	assert.Nil(t, result)
+}
+
+func TestClassifyToolsForApproval_EmptyMode(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /"}`},
+	}
+	result := classifyToolsForApproval(calls, "")
+	assert.Nil(t, result)
+}
+
+func TestClassifyToolsForApproval_UnlessTrusted_SafeCommand(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "ls -la"}`},
+	}
+	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
+	assert.Empty(t, result)
+}
+
+func TestClassifyToolsForApproval_UnlessTrusted_MutatingCommand(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /tmp"}`},
+	}
+	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
+	require.Len(t, result, 1)
+	assert.Equal(t, "1", result[0].CallID)
+	assert.Equal(t, "shell", result[0].ToolName)
+}
+
+func TestClassifyToolsForApproval_UnlessTrusted_ReadOnlyTools(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "read_file", Arguments: `{"file_path": "/tmp/test"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "list_dir", Arguments: `{"path": "/tmp"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "3", Name: "grep_files", Arguments: `{"pattern": "foo"}`},
+	}
+	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
+	assert.Empty(t, result)
+}
+
+func TestClassifyToolsForApproval_UnlessTrusted_WritingTools(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "write_file", Arguments: `{"file_path": "/tmp/test"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "apply_patch", Arguments: `{"file_path": "/tmp/test"}`},
+	}
+	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
+	require.Len(t, result, 2)
+}
+
+func TestClassifyToolsForApproval_UnlessTrusted_MixedBatch(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "read_file", Arguments: `{"file_path": "/tmp/a"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "shell", Arguments: `{"command": "rm -rf /tmp"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "3", Name: "shell", Arguments: `{"command": "ls -la"}`},
+	}
+	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
+	// Only the mutating shell command should need approval
+	require.Len(t, result, 1)
+	assert.Equal(t, "2", result[0].CallID)
+}
+
+func TestToolNeedsApproval(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		args     string
+		expected bool
+	}{
+		{"read_file is safe", "read_file", `{"file_path": "/tmp/test"}`, false},
+		{"list_dir is safe", "list_dir", `{"path": "/tmp"}`, false},
+		{"grep_files is safe", "grep_files", `{"pattern": "foo"}`, false},
+		{"write_file is mutating", "write_file", `{"file_path": "/tmp/test"}`, true},
+		{"apply_patch is mutating", "apply_patch", `{"file_path": "/tmp/test"}`, true},
+		{"shell ls is safe", "shell", `{"command": "ls -la"}`, false},
+		{"shell cat is safe", "shell", `{"command": "cat /tmp/test"}`, false},
+		{"shell rm is mutating", "shell", `{"command": "rm -rf /tmp"}`, true},
+		{"shell pip install is mutating", "shell", `{"command": "pip install foo"}`, true},
+		{"shell git status is safe", "shell", `{"command": "git status"}`, false},
+		{"shell git push is mutating", "shell", `{"command": "git push"}`, true},
+		{"unknown tool is mutating", "unknown_tool", `{}`, true},
+		{"shell with bad json is mutating", "shell", `{bad json`, true},
+		{"shell with empty command is mutating", "shell", `{"command": ""}`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, toolNeedsApproval(tt.toolName, tt.args))
+		})
+	}
+}
+
+func TestApplyApprovalDecision_AllApproved(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell"},
+		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "write_file"},
+	}
+	resp := &ApprovalResponse{Approved: []string{"1", "2"}}
+	approved, denied := applyApprovalDecision(calls, resp)
+	assert.Len(t, approved, 2)
+	assert.Empty(t, denied)
+}
+
+func TestApplyApprovalDecision_AllDenied(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell"},
+		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "write_file"},
+	}
+	resp := &ApprovalResponse{Denied: []string{"1", "2"}}
+	approved, denied := applyApprovalDecision(calls, resp)
+	assert.Empty(t, approved)
+	assert.Len(t, denied, 2)
+	// Verify denied results are properly formatted
+	for _, d := range denied {
+		assert.Equal(t, models.ItemTypeFunctionCallOutput, d.Type)
+		assert.Contains(t, d.Output.Content, "denied")
+		assert.False(t, *d.Output.Success)
+	}
+}
+
+func TestApplyApprovalDecision_NilResponse(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell"},
+	}
+	approved, denied := applyApprovalDecision(calls, nil)
+	assert.Len(t, approved, 1)
+	assert.Nil(t, denied)
+}
+
+// TestMultiTurn_ApprovalGate_QueryPendingApprovals verifies that querying
+// turn status during approval wait returns PhaseApprovalPending with correct items.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_QueryPendingApprovals() {
+	// LLM returns a mutating shell command
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-rm",
+					Name:      "shell",
+					Arguments: `{"command": "rm -rf /tmp/test"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	trueVal := true
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.Anything).
+		Return(activities.ToolActivityOutput{
+			CallID: "call-rm", Content: "", Success: &trueVal,
+		}, nil).Once()
+
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Done.", 20), nil).Once()
+
+	// Query turn status to verify approval pending, then approve
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+
+		assert.Equal(s.T(), PhaseApprovalPending, status.Phase)
+		require.Len(s.T(), status.PendingApprovals, 1)
+		assert.Equal(s.T(), "call-rm", status.PendingApprovals[0].CallID)
+		assert.Equal(s.T(), "shell", status.PendingApprovals[0].ToolName)
+		assert.Equal(s.T(), `{"command": "rm -rf /tmp/test"}`, status.PendingApprovals[0].Arguments)
+
+		// Approve to unblock
+		s.env.UpdateWorkflow(UpdateApprovalResponse, "approval-1", noopCallback(),
+			ApprovalResponse{Approved: []string{"call-rm"}})
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 4)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("Delete test", models.ApprovalUnlessTrusted))
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+}
+
+// TestMultiTurn_ApprovalGate_WriteFile verifies that write_file always
+// triggers approval in unless-trusted mode.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_WriteFile() {
+	// LLM returns a write_file call
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-write",
+					Name:      "write_file",
+					Arguments: `{"file_path": "/tmp/test.txt", "content": "hello"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	trueVal := true
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.Anything).
+		Return(activities.ToolActivityOutput{
+			CallID: "call-write", Content: "File written", Success: &trueVal,
+		}, nil).Once()
+
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("File created.", 20), nil).Once()
+
+	// Approve write_file
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateApprovalResponse, "approval-1", noopCallback(),
+			ApprovalResponse{Approved: []string{"call-write"}})
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 4)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("Write a file", models.ApprovalUnlessTrusted))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Contains(s.T(), result.ToolCallsExecuted, "write_file")
+}
+
+// TestMultiTurn_ApprovalGate_ShutdownDuringApproval verifies that a shutdown
+// during approval wait terminates cleanly.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_ShutdownDuringApproval() {
+	// LLM returns a mutating shell command
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-rm",
+					Name:      "shell",
+					Arguments: `{"command": "rm -rf /tmp/test"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	// NOTE: No ExecuteTool mock — tool should NOT be called
+
+	// Send shutdown instead of approval (shutdown also sets Interrupted)
+	s.sendShutdown(time.Second * 2)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("Delete test", models.ApprovalUnlessTrusted))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.NotContains(s.T(), result.ToolCallsExecuted, "shell")
+}
+
+// TestMultiTurn_ApprovalGate_MixedBatch verifies that when a batch has both
+// safe and unsafe tools, only the unsafe ones need approval. After approval,
+// both safe and approved unsafe tools execute.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_MixedBatch() {
+	// LLM returns a safe read_file and a mutating shell command
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-read",
+					Name:      "read_file",
+					Arguments: `{"file_path": "/tmp/test.txt"}`,
+				},
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-rm",
+					Name:      "shell",
+					Arguments: `{"command": "rm -rf /tmp/test"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	// Both tools execute after approval
+	trueVal := true
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.MatchedBy(func(input activities.ToolActivityInput) bool {
+		return input.ToolName == "read_file"
+	})).
+		Return(activities.ToolActivityOutput{
+			CallID: "call-read", Content: "file content", Success: &trueVal,
+		}, nil).Once()
+
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.MatchedBy(func(input activities.ToolActivityInput) bool {
+		return input.ToolName == "shell"
+	})).
+		Return(activities.ToolActivityOutput{
+			CallID: "call-rm", Content: "", Success: &trueVal,
+		}, nil).Once()
+
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Done.", 20), nil).Once()
+
+	// Approve — only the shell command should be in pending list
+	s.env.RegisterDelayedCallback(func() {
+		// Verify only the mutating tool is pending
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+		require.Len(s.T(), status.PendingApprovals, 1, "Only mutating tool should be pending")
+		assert.Equal(s.T(), "shell", status.PendingApprovals[0].ToolName)
+
+		s.env.UpdateWorkflow(UpdateApprovalResponse, "approval-1", noopCallback(),
+			ApprovalResponse{Approved: []string{"call-rm"}})
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 4)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("Read and delete", models.ApprovalUnlessTrusted))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Contains(s.T(), result.ToolCallsExecuted, "read_file")
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+}
+
+// TestMultiTurn_ApprovalGate_ReadFileAutoApproved verifies that read_file
+// skips approval in unless-trusted mode and executes immediately.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_ReadFileAutoApproved() {
+	// LLM returns a read_file call
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-read",
+					Name:      "read_file",
+					Arguments: `{"file_path": "/tmp/test.txt"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	trueVal := true
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.Anything).
+		Return(activities.ToolActivityOutput{
+			CallID: "call-read", Content: "file content", Success: &trueVal,
+		}, nil).Once()
+
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("File says: file content", 20), nil).Once()
+
+	// No approval callback — read_file should auto-execute
+
+	s.sendShutdown(time.Second * 3)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInputWithApproval("Read a file", models.ApprovalUnlessTrusted))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Contains(s.T(), result.ToolCallsExecuted, "read_file")
+}
+
 // Ensure we reference workflow.Context (suppress unused import warning)
 var _ workflow.Context

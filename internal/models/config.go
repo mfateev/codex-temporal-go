@@ -44,6 +44,18 @@ func DefaultToolsConfig() ToolsConfig {
 	}
 }
 
+// ApprovalMode controls when the user is prompted before tool execution.
+//
+// Maps to: codex-rs/protocol/src/protocol.rs AskForApproval
+type ApprovalMode string
+
+const (
+	// ApprovalUnlessTrusted prompts for all mutating tools. Safe commands auto-approved.
+	ApprovalUnlessTrusted ApprovalMode = "unless-trusted"
+	// ApprovalNever auto-approves everything, never prompts.
+	ApprovalNever ApprovalMode = "never"
+)
+
 // SessionConfiguration configures a complete agentic session.
 //
 // Maps to: codex-rs/core/src/codex.rs SessionConfiguration
@@ -58,6 +70,9 @@ type SessionConfiguration struct {
 
 	// Tool configuration
 	Tools ToolsConfig `json:"tools"`
+
+	// Approval mode (empty/unset treated as "never" for backward compat)
+	ApprovalMode ApprovalMode `json:"approval_mode,omitempty"`
 
 	// Execution context
 	Cwd string `json:"cwd,omitempty"` // Working directory for tool execution
