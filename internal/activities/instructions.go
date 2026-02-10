@@ -2,6 +2,9 @@ package activities
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/mfateev/codex-temporal-go/internal/instructions"
 )
@@ -53,5 +56,52 @@ func (a *InstructionActivities) LoadWorkerInstructions(
 	return LoadWorkerInstructionsOutput{
 		ProjectDocs: projectDocs,
 		GitRoot:     gitRoot,
+	}, nil
+}
+
+// LoadExecPolicyInput is the input for the LoadExecPolicy activity.
+type LoadExecPolicyInput struct {
+	CodexHome string `json:"codex_home"`
+}
+
+// LoadExecPolicyOutput is the output from the LoadExecPolicy activity.
+type LoadExecPolicyOutput struct {
+	// RulesSource is the concatenated content of all *.rules files.
+	// Transported as text so the workflow can parse it deterministically.
+	RulesSource string `json:"rules_source,omitempty"`
+}
+
+// LoadExecPolicy reads exec policy rules from the worker's filesystem.
+// Similar to LoadWorkerInstructions — runs on session task queue.
+func (a *InstructionActivities) LoadExecPolicy(
+	_ context.Context, input LoadExecPolicyInput,
+) (LoadExecPolicyOutput, error) {
+	if input.CodexHome == "" {
+		return LoadExecPolicyOutput{}, nil
+	}
+
+	rulesDir := filepath.Join(input.CodexHome, "rules")
+	entries, err := os.ReadDir(rulesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return LoadExecPolicyOutput{}, nil
+		}
+		return LoadExecPolicyOutput{}, nil // non-fatal
+	}
+
+	var parts []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".rules") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(rulesDir, entry.Name()))
+		if err != nil {
+			continue // skip unreadable files
+		}
+		parts = append(parts, string(data))
+	}
+
+	return LoadExecPolicyOutput{
+		RulesSource: strings.Join(parts, "\n"),
 	}, nil
 }

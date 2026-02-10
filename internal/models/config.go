@@ -54,6 +54,9 @@ const (
 	ApprovalUnlessTrusted ApprovalMode = "unless-trusted"
 	// ApprovalNever auto-approves everything, never prompts.
 	ApprovalNever ApprovalMode = "never"
+	// ApprovalOnFailure auto-approves in sandbox, escalates on failure.
+	// Maps to: codex-rs on-failure approval mode
+	ApprovalOnFailure ApprovalMode = "on-failure"
 )
 
 // SessionConfiguration configures a complete agentic session.
@@ -76,6 +79,15 @@ type SessionConfiguration struct {
 
 	// Execution context
 	Cwd string `json:"cwd,omitempty"` // Working directory for tool execution
+
+	// Codex home directory for loading exec policy rules.
+	// Default: ~/.codex
+	CodexHome string `json:"codex_home,omitempty"`
+
+	// Sandbox configuration
+	SandboxMode          string   `json:"sandbox_mode,omitempty"`           // "full-access", "read-only", "workspace-write"
+	SandboxWritableRoots []string `json:"sandbox_writable_roots,omitempty"` // Directories writable in workspace-write mode
+	SandboxNetworkAccess bool     `json:"sandbox_network_access,omitempty"` // Whether network is allowed in sandbox
 
 	// Session metadata
 	SessionSource string `json:"session_source,omitempty"` // "cli", "api", "exec" — for logging/tracking

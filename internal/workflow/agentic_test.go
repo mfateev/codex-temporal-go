@@ -17,6 +17,7 @@ import (
 	"github.com/mfateev/codex-temporal-go/internal/activities"
 	"github.com/mfateev/codex-temporal-go/internal/history"
 	"github.com/mfateev/codex-temporal-go/internal/models"
+	"github.com/mfateev/codex-temporal-go/internal/tools"
 )
 
 // Stub activity functions for the test environment.
@@ -45,16 +46,25 @@ func TestAgenticWorkflowSuite(t *testing.T) {
 	suite.Run(t, new(AgenticWorkflowTestSuite))
 }
 
+func LoadExecPolicy(_ context.Context, _ activities.LoadExecPolicyInput) (activities.LoadExecPolicyOutput, error) {
+	panic("stub: should be mocked")
+}
+
 func (s *AgenticWorkflowTestSuite) SetupTest() {
 	s.env = s.NewTestWorkflowEnvironment()
 	s.env.RegisterActivity(ExecuteLLMCall)
 	s.env.RegisterActivity(ExecuteTool)
 	s.env.RegisterActivity(LoadWorkerInstructions)
+	s.env.RegisterActivity(LoadExecPolicy)
 
 	// Default mock for LoadWorkerInstructions — returns empty docs.
 	// Tests that need specific worker docs can override this.
 	s.env.OnActivity("LoadWorkerInstructions", mock.Anything, mock.Anything).
 		Return(activities.LoadWorkerInstructionsOutput{}, nil).Maybe()
+
+	// Default mock for LoadExecPolicy — returns empty rules.
+	s.env.OnActivity("LoadExecPolicy", mock.Anything, mock.Anything).
+		Return(activities.LoadExecPolicyOutput{}, nil).Maybe()
 }
 
 func (s *AgenticWorkflowTestSuite) AfterTest(suiteName, testName string) {
@@ -978,34 +988,37 @@ func TestClassifyToolsForApproval_NeverMode(t *testing.T) {
 	calls := []models.ConversationItem{
 		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /"}`},
 	}
-	result := classifyToolsForApproval(calls, models.ApprovalNever)
-	assert.Nil(t, result)
+	pending, forbidden := classifyToolsForApproval(calls, models.ApprovalNever, "")
+	assert.Nil(t, pending)
+	assert.Nil(t, forbidden)
 }
 
 func TestClassifyToolsForApproval_EmptyMode(t *testing.T) {
 	calls := []models.ConversationItem{
 		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /"}`},
 	}
-	result := classifyToolsForApproval(calls, "")
-	assert.Nil(t, result)
+	pending, forbidden := classifyToolsForApproval(calls, "", "")
+	assert.Nil(t, pending)
+	assert.Nil(t, forbidden)
 }
 
 func TestClassifyToolsForApproval_UnlessTrusted_SafeCommand(t *testing.T) {
 	calls := []models.ConversationItem{
 		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "ls -la"}`},
 	}
-	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
-	assert.Empty(t, result)
+	pending, forbidden := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, "")
+	assert.Empty(t, pending)
+	assert.Empty(t, forbidden)
 }
 
 func TestClassifyToolsForApproval_UnlessTrusted_MutatingCommand(t *testing.T) {
 	calls := []models.ConversationItem{
 		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /tmp"}`},
 	}
-	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
-	require.Len(t, result, 1)
-	assert.Equal(t, "1", result[0].CallID)
-	assert.Equal(t, "shell", result[0].ToolName)
+	pending, _ := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, "")
+	require.Len(t, pending, 1)
+	assert.Equal(t, "1", pending[0].CallID)
+	assert.Equal(t, "shell", pending[0].ToolName)
 }
 
 func TestClassifyToolsForApproval_UnlessTrusted_ReadOnlyTools(t *testing.T) {
@@ -1014,8 +1027,9 @@ func TestClassifyToolsForApproval_UnlessTrusted_ReadOnlyTools(t *testing.T) {
 		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "list_dir", Arguments: `{"path": "/tmp"}`},
 		{Type: models.ItemTypeFunctionCall, CallID: "3", Name: "grep_files", Arguments: `{"pattern": "foo"}`},
 	}
-	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
-	assert.Empty(t, result)
+	pending, forbidden := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, "")
+	assert.Empty(t, pending)
+	assert.Empty(t, forbidden)
 }
 
 func TestClassifyToolsForApproval_UnlessTrusted_WritingTools(t *testing.T) {
@@ -1023,8 +1037,8 @@ func TestClassifyToolsForApproval_UnlessTrusted_WritingTools(t *testing.T) {
 		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "write_file", Arguments: `{"file_path": "/tmp/test"}`},
 		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "apply_patch", Arguments: `{"file_path": "/tmp/test"}`},
 	}
-	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
-	require.Len(t, result, 2)
+	pending, _ := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, "")
+	require.Len(t, pending, 2)
 }
 
 func TestClassifyToolsForApproval_UnlessTrusted_MixedBatch(t *testing.T) {
@@ -1033,38 +1047,51 @@ func TestClassifyToolsForApproval_UnlessTrusted_MixedBatch(t *testing.T) {
 		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "shell", Arguments: `{"command": "rm -rf /tmp"}`},
 		{Type: models.ItemTypeFunctionCall, CallID: "3", Name: "shell", Arguments: `{"command": "ls -la"}`},
 	}
-	result := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted)
+	pending, _ := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, "")
 	// Only the mutating shell command should need approval
-	require.Len(t, result, 1)
-	assert.Equal(t, "2", result[0].CallID)
+	require.Len(t, pending, 1)
+	assert.Equal(t, "2", pending[0].CallID)
 }
 
-func TestToolNeedsApproval(t *testing.T) {
+func TestClassifyToolsForApproval_ForbiddenByPolicy(t *testing.T) {
+	calls := []models.ConversationItem{
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /"}`},
+	}
+	rules := `prefix_rule(pattern=["rm"], decision="forbidden", justification="never delete")`
+	pending, forbidden := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, rules)
+	assert.Empty(t, pending)
+	require.Len(t, forbidden, 1)
+	assert.Equal(t, "1", forbidden[0].CallID)
+	assert.Contains(t, forbidden[0].Output.Content, "Forbidden")
+}
+
+func TestEvaluateToolApproval(t *testing.T) {
 	tests := []struct {
 		name     string
 		toolName string
 		args     string
-		expected bool
+		mode     models.ApprovalMode
+		expected tools.ExecApprovalRequirement
 	}{
-		{"read_file is safe", "read_file", `{"file_path": "/tmp/test"}`, false},
-		{"list_dir is safe", "list_dir", `{"path": "/tmp"}`, false},
-		{"grep_files is safe", "grep_files", `{"pattern": "foo"}`, false},
-		{"write_file is mutating", "write_file", `{"file_path": "/tmp/test"}`, true},
-		{"apply_patch is mutating", "apply_patch", `{"file_path": "/tmp/test"}`, true},
-		{"shell ls is safe", "shell", `{"command": "ls -la"}`, false},
-		{"shell cat is safe", "shell", `{"command": "cat /tmp/test"}`, false},
-		{"shell rm is mutating", "shell", `{"command": "rm -rf /tmp"}`, true},
-		{"shell pip install is mutating", "shell", `{"command": "pip install foo"}`, true},
-		{"shell git status is safe", "shell", `{"command": "git status"}`, false},
-		{"shell git push is mutating", "shell", `{"command": "git push"}`, true},
-		{"unknown tool is mutating", "unknown_tool", `{}`, true},
-		{"shell with bad json is mutating", "shell", `{bad json`, true},
-		{"shell with empty command is mutating", "shell", `{"command": ""}`, true},
+		{"read_file is safe", "read_file", `{"file_path": "/tmp/test"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"list_dir is safe", "list_dir", `{"path": "/tmp"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"grep_files is safe", "grep_files", `{"pattern": "foo"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"write_file is mutating", "write_file", `{"file_path": "/tmp/test"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"apply_patch is mutating", "apply_patch", `{"file_path": "/tmp/test"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell ls is safe", "shell", `{"command": "ls -la"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"shell cat is safe", "shell", `{"command": "cat /tmp/test"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"shell rm is mutating", "shell", `{"command": "rm -rf /tmp"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell git status is safe", "shell", `{"command": "git status"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"shell git push is mutating", "shell", `{"command": "git push"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"unknown tool is mutating", "unknown_tool", `{}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell with bad json is mutating", "shell", `{bad json`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell with empty command is mutating", "shell", `{"command": ""}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, toolNeedsApproval(tt.toolName, tt.args))
+			req, _ := evaluateToolApproval(tt.toolName, tt.args, nil, tt.mode)
+			assert.Equal(t, tt.expected, req)
 		})
 	}
 }

@@ -182,3 +182,89 @@ func TestFormatApprovalDetail_LongArgs(t *testing.T) {
 	assert.Contains(t, detail, "...")
 	assert.LessOrEqual(t, len(detail), 310) // "Args: " + 300 + "..."
 }
+
+// --- Index-based approval tests ---
+
+func TestHandleApprovalInput_IndexSingle(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+			{CallID: "c2", ToolName: "write_file"},
+			{CallID: "c3", ToolName: "apply_patch"},
+		},
+	}
+	resp := app.handleApprovalInput("2")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c2"}, resp.Approved)
+	assert.Equal(t, []string{"c1", "c3"}, resp.Denied)
+}
+
+func TestHandleApprovalInput_IndexMultiple(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+			{CallID: "c2", ToolName: "write_file"},
+			{CallID: "c3", ToolName: "apply_patch"},
+		},
+	}
+	resp := app.handleApprovalInput("1,3")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c1", "c3"}, resp.Approved)
+	assert.Equal(t, []string{"c2"}, resp.Denied)
+}
+
+func TestHandleApprovalInput_IndexWithSpaces(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+			{CallID: "c2", ToolName: "write_file"},
+		},
+	}
+	resp := app.handleApprovalInput("1, 2")
+	require.NotNil(t, resp)
+	assert.Equal(t, []string{"c1", "c2"}, resp.Approved)
+	assert.Empty(t, resp.Denied)
+}
+
+func TestHandleApprovalInput_IndexOutOfRange(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	resp := app.handleApprovalInput("5")
+	assert.Nil(t, resp)
+}
+
+func TestHandleApprovalInput_IndexZero(t *testing.T) {
+	app := &App{
+		pendingApprovals: []workflow.PendingApproval{
+			{CallID: "c1", ToolName: "shell"},
+		},
+	}
+	resp := app.handleApprovalInput("0")
+	assert.Nil(t, resp)
+}
+
+func TestParseApprovalIndices_Valid(t *testing.T) {
+	assert.Equal(t, []int{1, 3}, parseApprovalIndices("1,3", 3))
+	assert.Equal(t, []int{2}, parseApprovalIndices("2", 3))
+	assert.Equal(t, []int{1, 2, 3}, parseApprovalIndices("1,2,3", 3))
+}
+
+func TestParseApprovalIndices_WithSpaces(t *testing.T) {
+	assert.Equal(t, []int{1, 2}, parseApprovalIndices("1, 2", 3))
+}
+
+func TestParseApprovalIndices_Dedup(t *testing.T) {
+	indices := parseApprovalIndices("1,1,2", 3)
+	assert.Equal(t, []int{1, 2}, indices)
+}
+
+func TestParseApprovalIndices_Invalid(t *testing.T) {
+	assert.Nil(t, parseApprovalIndices("abc", 3))
+	assert.Nil(t, parseApprovalIndices("0", 3))
+	assert.Nil(t, parseApprovalIndices("4", 3))
+	assert.Nil(t, parseApprovalIndices("", 3))
+	assert.Nil(t, parseApprovalIndices("-1", 3))
+}

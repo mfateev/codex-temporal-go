@@ -10,17 +10,25 @@ import (
 
 	"github.com/mfateev/codex-temporal-go/internal/command_safety"
 	execpkg "github.com/mfateev/codex-temporal-go/internal/exec"
+	"github.com/mfateev/codex-temporal-go/internal/sandbox"
 	"github.com/mfateev/codex-temporal-go/internal/tools"
 )
 
 // ShellTool executes shell commands.
 //
 // Maps to: codex-rs/core/src/tools/handlers/shell.rs
-type ShellTool struct{}
+type ShellTool struct {
+	sandboxMgr sandbox.SandboxManager
+}
 
 // NewShellTool creates a new shell tool handler.
 func NewShellTool() *ShellTool {
-	return &ShellTool{}
+	return &ShellTool{sandboxMgr: sandbox.NewNoopSandboxManager()}
+}
+
+// NewShellToolWithSandbox creates a shell tool handler with a sandbox manager.
+func NewShellToolWithSandbox(mgr sandbox.SandboxManager) *ShellTool {
+	return &ShellTool{sandboxMgr: mgr}
 }
 
 // Name returns the tool's name.
@@ -54,6 +62,9 @@ func (t *ShellTool) IsMutating(invocation *tools.ToolInvocation) bool {
 // StartToCloseTimeout on the activity options — the context is cancelled
 // when the timeout fires, and Temporal retries per the RetryPolicy.
 //
+// If a SandboxPolicy is set on the invocation, the command is wrapped
+// through the SandboxManager before execution.
+//
 // Maps to: codex-rs/core/src/tools/handlers/shell.rs handle
 func (t *ShellTool) Handle(ctx context.Context, invocation *tools.ToolInvocation) (*tools.ToolOutput, error) {
 	commandArg, ok := invocation.Arguments["command"]
@@ -70,9 +81,26 @@ func (t *ShellTool) Handle(ctx context.Context, invocation *tools.ToolInvocation
 		return nil, tools.NewValidationError("command cannot be empty")
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
-	if invocation.Cwd != "" {
-		cmd.Dir = invocation.Cwd
+	// Build the command spec and apply sandbox if configured
+	spec := sandbox.CommandSpec{
+		Program: "bash",
+		Args:    []string{"-c", command},
+		Cwd:     invocation.Cwd,
+	}
+
+	execEnv, err := t.resolveExecEnv(spec, invocation.SandboxPolicy)
+	if err != nil {
+		return nil, tools.NewValidationError("sandbox setup failed: " + err.Error())
+	}
+
+	cmd := exec.CommandContext(ctx, execEnv.Command[0], execEnv.Command[1:]...)
+	if execEnv.Cwd != "" {
+		cmd.Dir = execEnv.Cwd
+	}
+
+	// Apply sandbox environment variables
+	if len(execEnv.Env) > 0 {
+		cmd.Env = appendEnvMap(cmd.Env, execEnv.Env)
 	}
 
 	// Capture stdout and stderr separately for smart aggregation with output limiting.
@@ -80,7 +108,7 @@ func (t *ShellTool) Handle(ctx context.Context, invocation *tools.ToolInvocation
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
 
-	err := cmd.Run()
+	err = cmd.Run()
 
 	// Aggregate and limit output.
 	output := execpkg.AggregateOutput(stdoutBuf.Bytes(), stderrBuf.Bytes())
@@ -103,4 +131,41 @@ func (t *ShellTool) Handle(ctx context.Context, invocation *tools.ToolInvocation
 		Content: string(output),
 		Success: &success,
 	}, nil
+}
+
+// resolveExecEnv applies sandbox wrapping if a policy is set.
+func (t *ShellTool) resolveExecEnv(spec sandbox.CommandSpec, policyRef *tools.SandboxPolicyRef) (*sandbox.ExecEnv, error) {
+	if policyRef == nil || t.sandboxMgr == nil {
+		return &sandbox.ExecEnv{
+			Command: append([]string{spec.Program}, spec.Args...),
+			Cwd:     spec.Cwd,
+		}, nil
+	}
+
+	policy := sandboxPolicyRefToPolicy(policyRef)
+	return t.sandboxMgr.Transform(spec, policy)
+}
+
+// sandboxPolicyRefToPolicy converts the serializable ref to a sandbox.SandboxPolicy.
+func sandboxPolicyRefToPolicy(ref *tools.SandboxPolicyRef) *sandbox.SandboxPolicy {
+	if ref == nil {
+		return nil
+	}
+	roots := make([]sandbox.WritableRoot, len(ref.WritableRoots))
+	for i, r := range ref.WritableRoots {
+		roots[i] = sandbox.WritableRoot(r)
+	}
+	return &sandbox.SandboxPolicy{
+		Mode:          sandbox.SandboxMode(ref.Mode),
+		WritableRoots: roots,
+		NetworkAccess: ref.NetworkAccess,
+	}
+}
+
+// appendEnvMap appends key=value pairs from a map to an env slice.
+func appendEnvMap(base []string, envMap map[string]string) []string {
+	for k, v := range envMap {
+		base = append(base, k+"="+v)
+	}
+	return base
 }

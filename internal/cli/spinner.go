@@ -105,6 +105,8 @@ func PhaseMessage(phase workflow.TurnPhase, toolsInFlight []string) string {
 		return "Running tool..."
 	case workflow.PhaseApprovalPending:
 		return "Waiting for approval..."
+	case workflow.PhaseEscalationPending:
+		return "Waiting for escalation decision..."
 	default:
 		return "Working..."
 	}

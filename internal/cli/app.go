@@ -31,10 +31,11 @@ const (
 type State int
 
 const (
-	StateStartup State = iota
+	StateStartup    State = iota
 	StateInput
 	StateWatching
-	StateApproval // Waiting for user to approve/deny tool calls
+	StateApproval   // Waiting for user to approve/deny tool calls
+	StateEscalation // Waiting for user to approve/deny sandbox escalation
 	StateShutdown
 )
 
@@ -50,6 +51,14 @@ type Config struct {
 	EnableRead   bool
 	Cwd          string
 	ApprovalMode models.ApprovalMode
+
+	// Sandbox settings
+	SandboxMode          string   // "full-access", "read-only", "workspace-write"
+	SandboxWritableRoots []string // Writable roots for workspace-write mode
+	SandboxNetworkAccess bool     // Whether network is allowed
+
+	// Codex config
+	CodexHome string // Path to codex config directory (default: ~/.codex)
 
 	// Instruction sources (populated by CLI main)
 	CLIProjectDocs          string // AGENTS.md from CLI's local project
@@ -81,8 +90,9 @@ type App struct {
 	consecutiveErrors int
 
 	// Approval state
-	pendingApprovals []workflow.PendingApproval
-	autoApprove      bool // Set by "always" response; auto-approves future requests
+	pendingApprovals   []workflow.PendingApproval
+	autoApprove        bool // Set by "always" response; auto-approves future requests
+	pendingEscalations []workflow.EscalationRequest
 
 	// Readline instance
 	rl *readline.Instance
@@ -182,6 +192,10 @@ func (a *App) startWorkflow() error {
 				EnableReadFile: a.config.EnableRead,
 			},
 			ApprovalMode:             a.config.ApprovalMode,
+			CodexHome:                a.config.CodexHome,
+			SandboxMode:              a.config.SandboxMode,
+			SandboxWritableRoots:     a.config.SandboxWritableRoots,
+			SandboxNetworkAccess:     a.config.SandboxNetworkAccess,
 			Cwd:                      cwd,
 			SessionSource:            "interactive-cli",
 			CLIProjectDocs:           a.config.CLIProjectDocs,
@@ -245,6 +259,9 @@ func (a *App) resumeWorkflow() error {
 	case workflow.PhaseApprovalPending:
 		a.state = StateApproval
 		a.renderApprovalPrompt(result.Status.PendingApprovals)
+	case workflow.PhaseEscalationPending:
+		a.state = StateEscalation
+		a.renderEscalationPrompt(result.Status.PendingEscalations)
 	default:
 		a.state = StateWatching
 	}
@@ -296,6 +313,8 @@ func (a *App) mainLoop() error {
 		startInput()
 	case StateApproval:
 		startInput()
+	case StateEscalation:
+		startInput()
 	}
 
 	defer stopPolling()
@@ -316,7 +335,25 @@ func (a *App) mainLoop() error {
 					startPolling()
 				} else {
 					// Invalid input, re-prompt
-					fmt.Fprintf(os.Stderr, "Please enter y(es), n(o), or a(lways): ")
+					fmt.Fprintf(os.Stderr, "Please enter y(es), n(o), a(lways), or indices (e.g. 1,3): ")
+					startInput()
+				}
+				continue
+			}
+
+			// Handle escalation input
+			if a.state == StateEscalation {
+				response := a.handleEscalationInput(strings.TrimSpace(line))
+				if response != nil {
+					if err := a.sendEscalationResponse(*response); err != nil {
+						fmt.Fprintf(os.Stderr, "Error sending escalation response: %v\n", err)
+					}
+					a.pendingEscalations = nil
+					a.state = StateWatching
+					a.spinner.Start("Re-running tools...")
+					startPolling()
+				} else {
+					fmt.Fprintf(os.Stderr, "Please enter y(es) or n(o): ")
 					startInput()
 				}
 				continue
@@ -399,6 +436,17 @@ func (a *App) mainLoop() error {
 				stopPolling()
 				a.state = StateApproval
 				a.renderApprovalPrompt(result.Status.PendingApprovals)
+				startInput()
+				continue
+			}
+
+			// Check for escalation pending (on-failure mode)
+			if result.Status.Phase == workflow.PhaseEscalationPending &&
+				len(result.Status.PendingEscalations) > 0 && a.state == StateWatching {
+				a.spinner.Stop()
+				stopPolling()
+				a.state = StateEscalation
+				a.renderEscalationPrompt(result.Status.PendingEscalations)
 				startInput()
 				continue
 			}
@@ -593,35 +641,99 @@ func (a *App) waitForCompletion() error {
 func (a *App) renderApprovalPrompt(approvals []workflow.PendingApproval) {
 	a.pendingApprovals = approvals
 	fmt.Fprintf(os.Stderr, "\n")
-	for _, ap := range approvals {
-		fmt.Fprintf(os.Stderr, "  %sTool:%s %s\n",
+	for i, ap := range approvals {
+		fmt.Fprintf(os.Stderr, "  %s[%d]%s %sTool:%s %s\n",
+			a.renderer.color(colorCyan), i+1, a.renderer.color(colorReset),
 			a.renderer.color(colorYellow), a.renderer.color(colorReset), ap.ToolName)
-		fmt.Fprintf(os.Stderr, "  %s\n\n", formatApprovalDetail(ap.ToolName, ap.Arguments))
+		fmt.Fprintf(os.Stderr, "      %s\n", formatApprovalDetail(ap.ToolName, ap.Arguments))
+		if ap.Reason != "" {
+			fmt.Fprintf(os.Stderr, "      %sReason:%s %s\n", a.renderer.color(colorFaint), a.renderer.color(colorReset), ap.Reason)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
 	}
-	fmt.Fprintf(os.Stderr, "Allow? [y]es / [n]o / [a]lways: ")
+	if len(approvals) > 1 {
+		fmt.Fprintf(os.Stderr, "Allow? [y]es / [n]o / [a]lways / 1,2 (select by index): ")
+	} else {
+		fmt.Fprintf(os.Stderr, "Allow? [y]es / [n]o / [a]lways: ")
+	}
 }
 
 // handleApprovalInput parses the user's response to an approval prompt.
+// Supports:
+//   - "y"/"yes" — approve all
+//   - "n"/"no" — deny all
+//   - "a"/"always" — approve all + auto-approve future
+//   - "1,3" — approve indices 1 and 3, deny the rest
+//
 // Returns nil if the input is not recognized.
 func (a *App) handleApprovalInput(line string) *workflow.ApprovalResponse {
 	line = strings.ToLower(strings.TrimSpace(line))
 
-	callIDs := make([]string, len(a.pendingApprovals))
+	allCallIDs := make([]string, len(a.pendingApprovals))
 	for i, ap := range a.pendingApprovals {
-		callIDs[i] = ap.CallID
+		allCallIDs[i] = ap.CallID
 	}
 
 	switch line {
 	case "y", "yes":
-		return &workflow.ApprovalResponse{Approved: callIDs}
+		return &workflow.ApprovalResponse{Approved: allCallIDs}
 	case "n", "no":
-		return &workflow.ApprovalResponse{Denied: callIDs}
+		return &workflow.ApprovalResponse{Denied: allCallIDs}
 	case "a", "always":
 		a.autoApprove = true
-		return &workflow.ApprovalResponse{Approved: callIDs}
-	default:
+		return &workflow.ApprovalResponse{Approved: allCallIDs}
+	}
+
+	// Try index-based selection: "1,3" or "1, 3" or "2"
+	indices := parseApprovalIndices(line, len(a.pendingApprovals))
+	if indices == nil {
+		return nil // not recognized
+	}
+
+	approvedSet := make(map[int]bool, len(indices))
+	for _, idx := range indices {
+		approvedSet[idx] = true
+	}
+
+	var approved, denied []string
+	for i, callID := range allCallIDs {
+		if approvedSet[i+1] { // 1-based indices
+			approved = append(approved, callID)
+		} else {
+			denied = append(denied, callID)
+		}
+	}
+
+	return &workflow.ApprovalResponse{Approved: approved, Denied: denied}
+}
+
+// parseApprovalIndices parses a comma-separated list of 1-based indices.
+// Returns nil if the input is not valid.
+func parseApprovalIndices(input string, maxIndex int) []int {
+	parts := strings.Split(input, ",")
+	var indices []int
+	seen := make(map[int]bool)
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		var idx int
+		n, err := fmt.Sscanf(part, "%d", &idx)
+		if err != nil || n != 1 || idx < 1 || idx > maxIndex {
+			return nil // invalid
+		}
+		if !seen[idx] {
+			seen[idx] = true
+			indices = append(indices, idx)
+		}
+	}
+
+	if len(indices) == 0 {
 		return nil
 	}
+	return indices
 }
 
 func (a *App) sendApprovalResponse(resp workflow.ApprovalResponse) error {
@@ -666,6 +778,84 @@ func formatApprovalDetail(toolName, arguments string) string {
 		display = display[:300] + "..."
 	}
 	return "Args: " + display
+}
+
+func (a *App) renderEscalationPrompt(escalations []workflow.EscalationRequest) {
+	a.pendingEscalations = escalations
+	fmt.Fprintf(os.Stderr, "\n%sSandbox failure — escalation needed:%s\n\n",
+		a.renderer.color(colorYellow), a.renderer.color(colorReset))
+	for i, esc := range escalations {
+		fmt.Fprintf(os.Stderr, "  %s[%d]%s %sTool:%s %s\n",
+			a.renderer.color(colorCyan), i+1, a.renderer.color(colorReset),
+			a.renderer.color(colorYellow), a.renderer.color(colorReset), esc.ToolName)
+		fmt.Fprintf(os.Stderr, "      %s\n", formatApprovalDetail(esc.ToolName, esc.Arguments))
+		if esc.Output != "" {
+			outputPreview := esc.Output
+			if len(outputPreview) > 200 {
+				outputPreview = outputPreview[:200] + "..."
+			}
+			fmt.Fprintf(os.Stderr, "      %sOutput:%s %s\n",
+				a.renderer.color(colorRed), a.renderer.color(colorReset), outputPreview)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
+	}
+	fmt.Fprintf(os.Stderr, "Re-run without sandbox? [y]es / [n]o: ")
+}
+
+func (a *App) handleEscalationInput(line string) *workflow.EscalationResponse {
+	line = strings.ToLower(strings.TrimSpace(line))
+
+	allCallIDs := make([]string, len(a.pendingEscalations))
+	for i, esc := range a.pendingEscalations {
+		allCallIDs[i] = esc.CallID
+	}
+
+	switch line {
+	case "y", "yes":
+		return &workflow.EscalationResponse{Approved: allCallIDs}
+	case "n", "no":
+		return &workflow.EscalationResponse{Denied: allCallIDs}
+	}
+
+	// Try index-based selection
+	indices := parseApprovalIndices(line, len(a.pendingEscalations))
+	if indices == nil {
+		return nil
+	}
+
+	approvedSet := make(map[int]bool, len(indices))
+	for _, idx := range indices {
+		approvedSet[idx] = true
+	}
+
+	var approved, denied []string
+	for i, callID := range allCallIDs {
+		if approvedSet[i+1] {
+			approved = append(approved, callID)
+		} else {
+			denied = append(denied, callID)
+		}
+	}
+
+	return &workflow.EscalationResponse{Approved: approved, Denied: denied}
+}
+
+func (a *App) sendEscalationResponse(resp workflow.EscalationResponse) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	updateHandle, err := a.client.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   a.workflowID,
+		UpdateName:   workflow.UpdateEscalationResponse,
+		Args:         []interface{}{resp},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		return err
+	}
+
+	var ack workflow.EscalationResponseAck
+	return updateHandle.Get(ctx, &ack)
 }
 
 func (a *App) printResumeHint() {

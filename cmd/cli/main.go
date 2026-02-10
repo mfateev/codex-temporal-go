@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.temporal.io/sdk/client"
 
@@ -37,6 +38,10 @@ func main() {
 	enableShell := flag.Bool("enable-shell", true, "Enable shell tool")
 	enableRead := flag.Bool("enable-read-file", true, "Enable read_file tool")
 	fullAuto := flag.Bool("full-auto", false, "Auto-approve all tool calls without prompting")
+	approvalMode := flag.String("approval-mode", "", "Approval mode: unless-trusted, never, on-failure")
+	sandboxMode := flag.String("sandbox", "", "Sandbox mode: full-access, read-only, workspace-write")
+	sandboxWritable := flag.String("sandbox-writable", "", "Comma-separated writable roots for workspace-write sandbox")
+	sandboxNetwork := flag.Bool("sandbox-network", true, "Allow network access in sandbox")
 	codexHome := flag.String("codex-home", "", "Path to codex config directory (default: ~/.codex)")
 	flag.Parse()
 
@@ -52,9 +57,25 @@ func main() {
 		sess = *workflowID
 	}
 
-	approvalMode := models.ApprovalUnlessTrusted
-	if *fullAuto {
-		approvalMode = models.ApprovalNever
+	var resolvedApproval models.ApprovalMode
+	switch {
+	case *approvalMode != "":
+		resolvedApproval = models.ApprovalMode(*approvalMode)
+	case *fullAuto:
+		resolvedApproval = models.ApprovalNever
+	default:
+		resolvedApproval = models.ApprovalUnlessTrusted
+	}
+
+	// Parse sandbox writable roots
+	var writableRoots []string
+	if *sandboxWritable != "" {
+		for _, root := range strings.Split(*sandboxWritable, ",") {
+			root = strings.TrimSpace(root)
+			if root != "" {
+				writableRoots = append(writableRoots, root)
+			}
+		}
 	}
 
 	// Load CLI-side project docs (AGENTS.md from current project)
@@ -87,7 +108,11 @@ func main() {
 		NoColor:                  *noColor,
 		EnableShell:              *enableShell,
 		EnableRead:               *enableRead,
-		ApprovalMode:             approvalMode,
+		ApprovalMode:             resolvedApproval,
+		SandboxMode:              *sandboxMode,
+		SandboxWritableRoots:     writableRoots,
+		SandboxNetworkAccess:     *sandboxNetwork,
+		CodexHome:                configDir,
 		CLIProjectDocs:           cliProjectDocs,
 		UserPersonalInstructions: userPersonalInstructions,
 	}

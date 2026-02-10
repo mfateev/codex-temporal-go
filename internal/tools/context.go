@@ -29,7 +29,18 @@ type ToolInvocation struct {
 	ToolName  string                 `json:"tool_name"`
 	Arguments map[string]interface{} `json:"arguments"`
 	Cwd       string                 `json:"cwd,omitempty"` // Working directory for tool execution
-	// Future: Session context, turn context, diff tracker
+
+	// SandboxPolicy, if set, restricts the execution environment.
+	// Populated from workflow config and passed through activity input.
+	SandboxPolicy *SandboxPolicyRef `json:"sandbox_policy,omitempty"`
+}
+
+// SandboxPolicyRef is a serializable reference to a sandbox policy.
+// Stored separately from internal/sandbox to avoid circular imports.
+type SandboxPolicyRef struct {
+	Mode          string   `json:"mode"`
+	WritableRoots []string `json:"writable_roots,omitempty"`
+	NetworkAccess bool     `json:"network_access"`
 }
 
 // ExecApprovalRequirement classifies what approval a command needs before execution.

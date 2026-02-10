@@ -67,6 +67,7 @@ func main() {
 
 	instructionActivities := activities.NewInstructionActivities()
 	w.RegisterActivity(instructionActivities.LoadWorkerInstructions)
+	w.RegisterActivity(instructionActivities.LoadExecPolicy)
 
 	// Start worker
 	log.Printf("Starting worker on task queue: %s", TaskQueue)

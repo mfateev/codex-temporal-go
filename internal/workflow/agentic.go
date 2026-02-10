@@ -14,7 +14,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/mfateev/codex-temporal-go/internal/activities"
-	"github.com/mfateev/codex-temporal-go/internal/command_safety"
+	"github.com/mfateev/codex-temporal-go/internal/execpolicy"
 	"github.com/mfateev/codex-temporal-go/internal/history"
 	"github.com/mfateev/codex-temporal-go/internal/instructions"
 	"github.com/mfateev/codex-temporal-go/internal/models"
@@ -41,6 +41,9 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 
 	// Resolve instructions (load worker-side AGENTS.md, merge all sources)
 	state.resolveInstructions(ctx)
+
+	// Load exec policy rules from worker filesystem
+	state.loadExecPolicy(ctx)
 
 	// Generate initial turn ID
 	turnID := generateTurnID(ctx)
@@ -110,13 +113,14 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	err = workflow.SetQueryHandler(ctx, QueryGetTurnStatus, func() (TurnStatus, error) {
 		turnCount, _ := s.History.GetTurnCount()
 		return TurnStatus{
-			Phase:            s.Phase,
-			CurrentTurnID:    s.CurrentTurnID,
-			ToolsInFlight:    s.ToolsInFlight,
-			PendingApprovals: s.PendingApprovals,
-			IterationCount:   s.IterationCount,
-			TotalTokens:      s.TotalTokens,
-			TurnCount:        turnCount,
+			Phase:              s.Phase,
+			CurrentTurnID:      s.CurrentTurnID,
+			ToolsInFlight:      s.ToolsInFlight,
+			PendingApprovals:   s.PendingApprovals,
+			PendingEscalations: s.PendingEscalations,
+			IterationCount:     s.IterationCount,
+			TotalTokens:        s.TotalTokens,
+			TurnCount:          turnCount,
 		}, nil
 	})
 	if err != nil {
@@ -245,6 +249,29 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	)
 	if err != nil {
 		logger.Error("Failed to register approval_response update handler", "error", err)
+	}
+
+	// Update: escalation_response
+	// Maps to: Codex on-failure escalation flow
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdateEscalationResponse,
+		func(ctx workflow.Context, resp EscalationResponse) (EscalationResponseAck, error) {
+			s.EscalationResponse = &resp
+			s.EscalationReceived = true
+			return EscalationResponseAck{}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, resp EscalationResponse) error {
+				if s.Phase != PhaseEscalationPending {
+					return fmt.Errorf("no escalation pending")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register escalation_response update handler", "error", err)
 	}
 }
 
@@ -506,7 +533,34 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 		// Execute tools if present (parallel execution)
 		if len(functionCalls) > 0 {
 			// Classify which tools need user approval
-			needsApproval := classifyToolsForApproval(functionCalls, s.Config.ApprovalMode)
+			needsApproval, forbiddenResults := classifyToolsForApproval(
+				functionCalls, s.Config.ApprovalMode, s.ExecPolicyRules)
+
+			// Add forbidden results to history immediately (LLM will see them)
+			for _, fr := range forbiddenResults {
+				if err := s.History.AddItem(fr); err != nil {
+					return false, fmt.Errorf("failed to add forbidden result: %w", err)
+				}
+			}
+
+			// Remove forbidden tools from the function calls list
+			if len(forbiddenResults) > 0 {
+				forbiddenIDs := make(map[string]bool, len(forbiddenResults))
+				for _, fr := range forbiddenResults {
+					forbiddenIDs[fr.CallID] = true
+				}
+				var remaining []models.ConversationItem
+				for _, fc := range functionCalls {
+					if !forbiddenIDs[fc.CallID] {
+						remaining = append(remaining, fc)
+					}
+				}
+				functionCalls = remaining
+				if len(functionCalls) == 0 {
+					s.IterationCount++
+					continue
+				}
+			}
 
 			if len(needsApproval) > 0 {
 				// Set approval pending state
@@ -566,6 +620,14 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 
 			// Clear tools in flight
 			s.ToolsInFlight = nil
+
+			// On-failure mode: check for failed tools and offer escalation
+			if s.Config.ApprovalMode == models.ApprovalOnFailure {
+				toolResults, err = s.handleOnFailureEscalation(ctx, functionCalls, toolResults)
+				if err != nil {
+					return false, err
+				}
+			}
 
 			// Track which tools were executed
 			for _, fc := range functionCalls {
@@ -814,54 +876,260 @@ func resolveToolTimeout(specByName map[string]tools.ToolSpec, toolName string, a
 }
 
 // classifyToolsForApproval determines which tool calls need user approval.
-// In "never" mode (or empty/unset for backward compat), returns nil — all auto-approved.
-// In "unless-trusted" mode, returns tools that are mutating.
+// Uses the exec policy engine when available, falling back to heuristic classification.
+//
+// Returns:
+//   - pending: tools needing approval (shown to user)
+//   - forbidden: tools that are forbidden (denied immediately)
 //
 // Maps to: Codex AskForApproval policy check before tool dispatch
-func classifyToolsForApproval(functionCalls []models.ConversationItem, mode models.ApprovalMode) []PendingApproval {
+func classifyToolsForApproval(
+	functionCalls []models.ConversationItem,
+	mode models.ApprovalMode,
+	policyRules string,
+) (pending []PendingApproval, forbidden []models.ConversationItem) {
 	// Empty/unset mode or "never" → auto-approve all (backward compat)
 	if mode == "" || mode == models.ApprovalNever {
-		return nil
+		return nil, nil
 	}
 
-	var pending []PendingApproval
+	// Build exec policy manager from serialized rules
+	var policyMgr *execpolicy.ExecPolicyManager
+	if policyRules != "" {
+		mgr, err := execpolicy.LoadExecPolicyFromSource(policyRules)
+		if err == nil {
+			policyMgr = mgr
+		}
+	}
+
 	for _, fc := range functionCalls {
-		if toolNeedsApproval(fc.Name, fc.Arguments) {
+		req, reason := evaluateToolApproval(fc.Name, fc.Arguments, policyMgr, mode)
+		switch req {
+		case tools.ApprovalSkip:
+			continue // auto-approved
+		case tools.ApprovalNeeded:
 			pending = append(pending, PendingApproval{
 				CallID:    fc.CallID,
 				ToolName:  fc.Name,
 				Arguments: fc.Arguments,
+				Reason:    reason,
+			})
+		case tools.ApprovalForbidden:
+			falseVal := false
+			msg := "This command is forbidden by exec policy."
+			if reason != "" {
+				msg = fmt.Sprintf("Forbidden: %s", reason)
+			}
+			forbidden = append(forbidden, models.ConversationItem{
+				Type:   models.ItemTypeFunctionCallOutput,
+				CallID: fc.CallID,
+				Output: &models.FunctionCallOutputPayload{
+					Content: msg,
+					Success: &falseVal,
+				},
 			})
 		}
 	}
-	return pending
+	return pending, forbidden
 }
 
-// toolNeedsApproval returns true if a tool call is mutating and needs user approval.
-func toolNeedsApproval(toolName, arguments string) bool {
+// evaluateToolApproval determines the approval requirement for a single tool call.
+// Returns the requirement and a human-readable reason.
+func evaluateToolApproval(
+	toolName, arguments string,
+	policyMgr *execpolicy.ExecPolicyManager,
+	mode models.ApprovalMode,
+) (tools.ExecApprovalRequirement, string) {
 	switch toolName {
 	case "read_file", "list_dir", "grep_files":
-		return false // Read-only tools
-	case "write_file", "apply_patch":
-		return true // Always mutating
+		return tools.ApprovalSkip, "" // Read-only tools always safe
+
 	case "shell":
-		return !isShellCommandSafe(arguments)
+		return evaluateShellApproval(arguments, policyMgr, mode)
+
+	case "write_file", "apply_patch":
+		if mode == models.ApprovalNever {
+			return tools.ApprovalSkip, ""
+		}
+		return tools.ApprovalNeeded, "mutating file operation"
+
 	default:
-		return true // Unknown tools need approval
+		if mode == models.ApprovalNever {
+			return tools.ApprovalSkip, ""
+		}
+		return tools.ApprovalNeeded, "unknown tool"
 	}
 }
 
-// isShellCommandSafe checks if a shell command is safe using command_safety.
-func isShellCommandSafe(arguments string) bool {
+// evaluateShellApproval evaluates a shell tool call through the exec policy engine.
+func evaluateShellApproval(
+	arguments string,
+	policyMgr *execpolicy.ExecPolicyManager,
+	mode models.ApprovalMode,
+) (tools.ExecApprovalRequirement, string) {
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return false // Can't parse → needs approval
+		return tools.ApprovalNeeded, "cannot parse arguments"
 	}
 	cmd, ok := args["command"].(string)
 	if !ok || cmd == "" {
-		return false
+		return tools.ApprovalNeeded, "missing command"
 	}
-	return command_safety.IsKnownSafeCommand([]string{"bash", "-c", cmd})
+
+	// Use exec policy if available
+	if policyMgr != nil {
+		eval := policyMgr.GetEvaluation([]string{"bash", "-c", cmd}, string(mode))
+		req := decisionToApprovalReq(eval.Decision)
+		return req, eval.Justification
+	}
+
+	// Fallback to heuristic (same as before exec policy was added)
+	if mode == models.ApprovalNever || mode == "" {
+		return tools.ApprovalSkip, ""
+	}
+	if mode == models.ApprovalOnFailure {
+		return tools.ApprovalSkip, "" // runs in sandbox
+	}
+	// unless-trusted: use command_safety heuristic
+	mgr := execpolicy.NewExecPolicyManager(execpolicy.NewPolicy())
+	return mgr.EvaluateShellCommand(cmd, string(mode)), ""
+}
+
+// decisionToApprovalReq maps a policy Decision to ExecApprovalRequirement.
+func decisionToApprovalReq(d execpolicy.Decision) tools.ExecApprovalRequirement {
+	switch d {
+	case execpolicy.DecisionAllow:
+		return tools.ApprovalSkip
+	case execpolicy.DecisionPrompt:
+		return tools.ApprovalNeeded
+	case execpolicy.DecisionForbidden:
+		return tools.ApprovalForbidden
+	default:
+		return tools.ApprovalNeeded
+	}
+}
+
+// loadExecPolicy loads exec policy rules from the worker filesystem.
+// Non-fatal: falls back to empty policy on failure.
+func (s *SessionState) loadExecPolicy(ctx workflow.Context) {
+	logger := workflow.GetLogger(ctx)
+
+	if s.Config.CodexHome == "" {
+		return
+	}
+
+	loadInput := activities.LoadExecPolicyInput{
+		CodexHome: s.Config.CodexHome,
+	}
+
+	actOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 2,
+		},
+	}
+	if s.Config.SessionTaskQueue != "" {
+		actOpts.TaskQueue = s.Config.SessionTaskQueue
+	}
+	loadCtx := workflow.WithActivityOptions(ctx, actOpts)
+
+	var loadResult activities.LoadExecPolicyOutput
+	err := workflow.ExecuteActivity(loadCtx, "LoadExecPolicy", loadInput).Get(ctx, &loadResult)
+	if err != nil {
+		logger.Warn("Failed to load exec policy, using defaults", "error", err)
+		return
+	}
+
+	s.ExecPolicyRules = loadResult.RulesSource
+	logger.Info("Exec policy loaded", "rules_len", len(loadResult.RulesSource))
+}
+
+// handleOnFailureEscalation checks for failed tools in on-failure mode.
+// For failed tools, prompts the user to re-execute without sandbox.
+// Returns updated tool results (may include re-executed results).
+func (s *SessionState) handleOnFailureEscalation(
+	ctx workflow.Context,
+	functionCalls []models.ConversationItem,
+	toolResults []activities.ToolActivityOutput,
+) ([]activities.ToolActivityOutput, error) {
+	logger := workflow.GetLogger(ctx)
+
+	// Find failed tools
+	var escalations []EscalationRequest
+	failedIndices := make(map[int]bool)
+
+	for i, result := range toolResults {
+		if result.Success != nil && !*result.Success {
+			failedIndices[i] = true
+			escalations = append(escalations, EscalationRequest{
+				CallID:    result.CallID,
+				ToolName:  functionCalls[i].Name,
+				Arguments: functionCalls[i].Arguments,
+				Output:    result.Content,
+				Reason:    "command failed in sandbox",
+			})
+		}
+	}
+
+	if len(escalations) == 0 {
+		return toolResults, nil // No failures
+	}
+
+	// Enter escalation pending state
+	s.Phase = PhaseEscalationPending
+	s.PendingEscalations = escalations
+	s.EscalationReceived = false
+	s.EscalationResponse = nil
+
+	logger.Info("Waiting for escalation decision", "failed_count", len(escalations))
+
+	// Wait for escalation response
+	err := workflow.Await(ctx, func() bool {
+		return s.EscalationReceived || s.Interrupted || s.ShutdownRequested
+	})
+	if err != nil {
+		return nil, fmt.Errorf("escalation await failed: %w", err)
+	}
+
+	s.PendingEscalations = nil
+
+	if s.Interrupted || s.ShutdownRequested {
+		logger.Info("Escalation wait interrupted")
+		return toolResults, nil // Return original results
+	}
+
+	if s.EscalationResponse == nil {
+		return toolResults, nil
+	}
+
+	// Re-execute approved tools without sandbox
+	approvedSet := make(map[string]bool, len(s.EscalationResponse.Approved))
+	for _, id := range s.EscalationResponse.Approved {
+		approvedSet[id] = true
+	}
+
+	for i, result := range toolResults {
+		if !failedIndices[i] || !approvedSet[result.CallID] {
+			continue
+		}
+
+		logger.Info("Re-executing tool without sandbox", "tool", functionCalls[i].Name)
+
+		// Re-execute without sandbox (no SandboxPolicy)
+		reResults, err := executeToolsInParallel(
+			ctx,
+			[]models.ConversationItem{functionCalls[i]},
+			s.ToolSpecs, s.Config.Cwd, s.Config.SessionTaskQueue,
+		)
+		if err != nil {
+			continue // Keep original failed result
+		}
+		if len(reResults) > 0 {
+			toolResults[i] = reResults[0]
+		}
+	}
+
+	return toolResults, nil
 }
 
 // applyApprovalDecision filters function calls based on the approval response.
