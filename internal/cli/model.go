@@ -774,7 +774,6 @@ func Run(config Config) error {
 	if !config.Inline {
 		opts = append(opts, tea.WithAltScreen())
 	}
-	opts = append(opts, tea.WithMouseCellMotion())
 
 	p := tea.NewProgram(model, opts...)
 	finalModel, err := p.Run()
