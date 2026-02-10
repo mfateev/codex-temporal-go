@@ -14,9 +14,11 @@ func ComposeDeveloperInstructions(approvalMode, cwd string) string {
 
 	switch approvalMode {
 	case "never":
-		parts = append(parts, "Approval mode: full-auto. All tool calls execute without user confirmation.")
+		parts = append(parts, "Approval mode: full-auto. All tool calls execute without user confirmation. Proactively run tests and validation.")
 	case "unless-trusted":
-		parts = append(parts, "Approval mode: unless-trusted. Read-only tools (read_file, list_dir, grep_files) and safe shell commands execute automatically. Mutating operations require user approval.")
+		parts = append(parts, "Approval mode: unless-trusted. Read-only tools (read_file, list_dir, grep_files) and safe shell commands execute automatically. Mutating operations require user approval. Hold off on running tests until the user confirms.")
+	case "on-failure":
+		parts = append(parts, "Approval mode: on-failure. All tool calls execute automatically inside a sandbox. If a command fails, the user is asked whether to re-run it without sandbox restrictions. Proactively run tests and validation.")
 	default:
 		// No approval mode info if unset (backward compat)
 	}

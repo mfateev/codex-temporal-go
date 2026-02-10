@@ -10,8 +10,8 @@ import (
 
 func TestGetBaseInstructions_Default(t *testing.T) {
 	result := GetBaseInstructions("")
-	assert.Contains(t, result, "software engineering assistant")
-	assert.Contains(t, result, "Guidelines")
+	assert.Contains(t, result, "coding agent")
+	assert.Contains(t, result, "Task execution")
 }
 
 func TestGetBaseInstructions_Override(t *testing.T) {
@@ -101,7 +101,7 @@ func TestMergeInstructions_BaseOverride(t *testing.T) {
 
 func TestMergeInstructions_DefaultBase(t *testing.T) {
 	result := MergeInstructions(MergeInput{})
-	assert.Contains(t, result.Base, "software engineering assistant")
+	assert.Contains(t, result.Base, "coding agent")
 }
 
 func TestMergeInstructions_DeveloperPopulated(t *testing.T) {
