@@ -352,8 +352,6 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 
 	if !m.ready {
 		m.viewport = viewport.New(m.width, vpHeight)
-		m.viewport.MouseWheelEnabled = true
-		m.viewport.MouseWheelDelta = 3
 		m.viewport.SetContent(m.viewportContent)
 
 		m.renderer = NewItemRenderer(m.width, m.config.NoColor, m.config.NoMarkdown, m.styles)
@@ -776,9 +774,16 @@ func Run(config Config) error {
 	if !config.Inline {
 		opts = append(opts, tea.WithAltScreen())
 	}
-	opts = append(opts, tea.WithMouseCellMotion())
+	// No mouse capture — preserves native text selection.
+	// Alternate scroll mode (CSI 1007) converts wheel → arrow keys.
 
 	p := tea.NewProgram(model, opts...)
+
+	// Enable alternate scroll mode: terminal translates wheel to arrow keys.
+	// This matches Codex's approach — scrolling works without capturing mouse.
+	fmt.Fprint(os.Stdout, "\x1b[?1007h")
+	defer fmt.Fprint(os.Stdout, "\x1b[?1007l")
+
 	finalModel, err := p.Run()
 	if err != nil {
 		return fmt.Errorf("TUI error: %w", err)
