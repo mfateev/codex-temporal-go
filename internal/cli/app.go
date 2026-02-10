@@ -152,7 +152,7 @@ func (a *App) Run() error {
 	} else {
 		// If no initial message, prompt for one
 		if a.config.Message == "" {
-			fmt.Fprintf(os.Stderr, "codex-temporal (type /exit to disconnect, /end to terminate session)\n")
+			fmt.Fprintf(os.Stderr, "tcx (type /exit to disconnect, /end to terminate session)\n")
 			line, err := a.rl.Readline()
 			if err != nil {
 				return nil // User cancelled
@@ -863,7 +863,7 @@ func (a *App) sendEscalationResponse(resp workflow.EscalationResponse) error {
 }
 
 func (a *App) printResumeHint() {
-	fmt.Fprintf(os.Stderr, "\nSession suspended. Resume with:\n  cli --session %s\n", a.workflowID)
+	fmt.Fprintf(os.Stderr, "\nSession suspended. Resume with:\n  tcx --session %s\n", a.workflowID)
 }
 
 // pollErrorKind classifies errors from workflow queries.

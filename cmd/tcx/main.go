@@ -1,4 +1,4 @@
-// Interactive CLI for codex-temporal-go workflows.
+// tcx is the interactive CLI for codex-temporal-go workflows.
 //
 // A REPL-style interface that connects to a Temporal workflow,
 // shows conversation items as they appear, and lets you type
@@ -6,10 +6,10 @@
 //
 // Usage:
 //
-//	cli -m "hello"                    Start new session with initial message
-//	cli                               Start new session, enter input immediately
-//	cli --session <id>               Resume existing session
-//	cli -m "hello" --model gpt-4o    Use a specific model
+//	tcx -m "hello"                    Start new session with initial message
+//	tcx                               Start new session, enter input immediately
+//	tcx --session <id>               Resume existing session
+//	tcx -m "hello" --model gpt-4o    Use a specific model
 package main
 
 import (
