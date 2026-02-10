@@ -16,6 +16,7 @@ import (
 	"github.com/mfateev/codex-temporal-go/internal/activities"
 	"github.com/mfateev/codex-temporal-go/internal/command_safety"
 	"github.com/mfateev/codex-temporal-go/internal/history"
+	"github.com/mfateev/codex-temporal-go/internal/instructions"
 	"github.com/mfateev/codex-temporal-go/internal/models"
 	"github.com/mfateev/codex-temporal-go/internal/tools"
 )
@@ -38,6 +39,9 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 	// Build tool specs based on configuration
 	state.ToolSpecs = buildToolSpecs(input.Config.Tools)
 
+	// Resolve instructions (load worker-side AGENTS.md, merge all sources)
+	state.resolveInstructions(ctx)
+
 	// Generate initial turn ID
 	turnID := generateTurnID(ctx)
 	state.CurrentTurnID = turnID
@@ -48,6 +52,18 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 		TurnID: turnID,
 	}); err != nil {
 		return WorkflowResult{}, fmt.Errorf("failed to add turn started: %w", err)
+	}
+
+	// Add environment context as the first user message
+	if state.Config.Cwd != "" {
+		envCtx := instructions.BuildEnvironmentContext(state.Config.Cwd, "")
+		if err := state.History.AddItem(models.ConversationItem{
+			Type:    models.ItemTypeUserMessage,
+			Content: envCtx,
+			TurnID:  turnID,
+		}); err != nil {
+			return WorkflowResult{}, fmt.Errorf("failed to add environment context: %w", err)
+		}
 	}
 
 	// Add initial user message to history
@@ -240,6 +256,58 @@ func generateTurnID(ctx workflow.Context) string {
 	})
 	_ = encoded.Get(&nanos)
 	return fmt.Sprintf("turn-%d", nanos)
+}
+
+// resolveInstructions loads worker-side AGENTS.md files and merges all
+// instruction sources into the session configuration. Called once before
+// the first turn. Non-fatal: falls back to CLI-provided docs on failure.
+func (s *SessionState) resolveInstructions(ctx workflow.Context) {
+	logger := workflow.GetLogger(ctx)
+
+	// Load worker-side project docs via activity (runs on session task queue)
+	var workerDocs string
+	loadInput := activities.LoadWorkerInstructionsInput{
+		Cwd: s.Config.Cwd,
+	}
+
+	actOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 2,
+		},
+	}
+	if s.Config.SessionTaskQueue != "" {
+		actOpts.TaskQueue = s.Config.SessionTaskQueue
+	}
+	loadCtx := workflow.WithActivityOptions(ctx, actOpts)
+
+	var loadResult activities.LoadWorkerInstructionsOutput
+	err := workflow.ExecuteActivity(loadCtx, "LoadWorkerInstructions", loadInput).Get(ctx, &loadResult)
+	if err != nil {
+		logger.Warn("Failed to load worker instructions, using CLI fallback", "error", err)
+	} else {
+		workerDocs = loadResult.ProjectDocs
+	}
+
+	// Merge all instruction sources
+	merged := instructions.MergeInstructions(instructions.MergeInput{
+		BaseOverride:             s.Config.BaseInstructions,
+		CLIProjectDocs:           s.Config.CLIProjectDocs,
+		WorkerProjectDocs:        workerDocs,
+		UserPersonalInstructions: s.Config.UserPersonalInstructions,
+		ApprovalMode:             string(s.Config.ApprovalMode),
+		Cwd:                      s.Config.Cwd,
+	})
+
+	// Store merged results in config (persists through ContinueAsNew)
+	s.Config.BaseInstructions = merged.Base
+	s.Config.DeveloperInstructions = merged.Developer
+	s.Config.UserInstructions = merged.User
+
+	logger.Info("Instructions resolved",
+		"base_len", len(merged.Base),
+		"developer_len", len(merged.Developer),
+		"user_len", len(merged.User))
 }
 
 // runMultiTurnLoop is the outer loop that waits for user input between turns.
@@ -491,7 +559,7 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 			s.ToolsInFlight = toolNames
 			logger.Info("Executing tools", "count", len(functionCalls))
 
-			toolResults, err := executeToolsInParallel(ctx, functionCalls, s.ToolSpecs, s.Config.Cwd)
+			toolResults, err := executeToolsInParallel(ctx, functionCalls, s.ToolSpecs, s.Config.Cwd, s.Config.SessionTaskQueue)
 			if err != nil {
 				return false, fmt.Errorf("failed to execute tools: %w", err)
 			}
@@ -568,8 +636,11 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 //  2. DefaultTimeoutMs from the tool's ToolSpec
 //  3. DefaultToolTimeoutMs constant as a fallback
 //
+// If sessionTaskQueue is non-empty, tool activities are dispatched to that queue
+// (enabling per-session worker routing in multi-host mode).
+//
 // Maps to: codex-rs/core/src/tools/parallel.rs drain_in_flight
-func executeToolsInParallel(ctx workflow.Context, functionCalls []models.ConversationItem, toolSpecs []tools.ToolSpec, cwd string) ([]activities.ToolActivityOutput, error) {
+func executeToolsInParallel(ctx workflow.Context, functionCalls []models.ConversationItem, toolSpecs []tools.ToolSpec, cwd, sessionTaskQueue string) ([]activities.ToolActivityOutput, error) {
 	logger := workflow.GetLogger(ctx)
 
 	// Build a lookup map from tool name to spec for fast access.
@@ -594,7 +665,7 @@ func executeToolsInParallel(ctx workflow.Context, functionCalls []models.Convers
 		// Resolve per-tool timeout for StartToCloseTimeout.
 		timeout := resolveToolTimeout(specByName, fc.Name, args)
 
-		toolCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		actOpts := workflow.ActivityOptions{
 			StartToCloseTimeout: timeout,
 			RetryPolicy: &temporal.RetryPolicy{
 				InitialInterval:    time.Second,
@@ -602,7 +673,11 @@ func executeToolsInParallel(ctx workflow.Context, functionCalls []models.Convers
 				MaximumInterval:    time.Minute,
 				MaximumAttempts:    5,
 			},
-		})
+		}
+		if sessionTaskQueue != "" {
+			actOpts.TaskQueue = sessionTaskQueue
+		}
+		toolCtx := workflow.WithActivityOptions(ctx, actOpts)
 
 		input := activities.ToolActivityInput{
 			CallID:    fc.CallID,

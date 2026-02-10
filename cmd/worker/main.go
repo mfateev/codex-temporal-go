@@ -65,6 +65,9 @@ func main() {
 	toolActivities := activities.NewToolActivities(toolRegistry)
 	w.RegisterActivity(toolActivities.ExecuteTool)
 
+	instructionActivities := activities.NewInstructionActivities()
+	w.RegisterActivity(instructionActivities.LoadWorkerInstructions)
+
 	// Start worker
 	log.Printf("Starting worker on task queue: %s", TaskQueue)
 	log.Printf("Temporal server: %s", client.DefaultHostPort)

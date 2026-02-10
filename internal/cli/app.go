@@ -50,6 +50,10 @@ type Config struct {
 	EnableRead   bool
 	Cwd          string
 	ApprovalMode models.ApprovalMode
+
+	// Instruction sources (populated by CLI main)
+	CLIProjectDocs          string // AGENTS.md from CLI's local project
+	UserPersonalInstructions string // From ~/.codex/instructions.md
 }
 
 // App is the interactive CLI application.
@@ -177,9 +181,11 @@ func (a *App) startWorkflow() error {
 				EnableShell:    a.config.EnableShell,
 				EnableReadFile: a.config.EnableRead,
 			},
-			ApprovalMode:  a.config.ApprovalMode,
-			Cwd:           cwd,
-			SessionSource: "interactive-cli",
+			ApprovalMode:             a.config.ApprovalMode,
+			Cwd:                      cwd,
+			SessionSource:            "interactive-cli",
+			CLIProjectDocs:           a.config.CLIProjectDocs,
+			UserPersonalInstructions: a.config.UserPersonalInstructions,
 		},
 	}
 

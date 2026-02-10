@@ -79,6 +79,18 @@ type SessionConfiguration struct {
 
 	// Session metadata
 	SessionSource string `json:"session_source,omitempty"` // "cli", "api", "exec" — for logging/tracking
+
+	// CLI-side project docs (AGENTS.md from CLI's local project).
+	// Worker-side discovery may replace these.
+	CLIProjectDocs string `json:"cli_project_docs,omitempty"`
+
+	// User personal instructions (from ~/.codex/instructions.md).
+	// Always included in final instructions.
+	UserPersonalInstructions string `json:"user_personal_instructions,omitempty"`
+
+	// Task queue for session-specific activities (tools, instruction loading).
+	// If empty, uses the workflow's default queue (backward compat).
+	SessionTaskQueue string `json:"session_task_queue,omitempty"`
 }
 
 // DefaultSessionConfiguration returns sensible defaults.
