@@ -143,12 +143,17 @@ func NewModel(config Config, c client.Client) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
+	initialState := StateStartup
+	if config.Session == "" && config.Message == "" {
+		initialState = StateInput
+	}
+
 	return Model{
 		config:          config,
 		client:          c,
 		keys:            DefaultKeyMap(),
 		styles:          styles,
-		state:           StateStartup,
+		state:           initialState,
 		lastRenderedSeq: -1,
 		textarea:        ta,
 		spinner:         sp,
@@ -168,10 +173,8 @@ func (m Model) Init() tea.Cmd {
 		cmds = append(cmds, resumeWorkflowCmd(m.client, m.config.Session))
 	} else if m.config.Message != "" {
 		cmds = append(cmds, startWorkflowCmd(m.client, m.config))
-	} else {
-		// No message yet — start in input mode, workflow starts on first submit
-		m.state = StateInput
 	}
+	// else: no message, no session — already StateInput from NewModel
 
 	return tea.Batch(cmds...)
 }
@@ -200,7 +203,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case WorkflowStartErrorMsg:
 		m.err = msg.Err
 		m.quitting = true
-		return m, tea.Quit
+		return &m, tea.Quit
 
 	case PollResultMsg:
 		return m.handlePollResult(msg)
@@ -224,7 +227,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ShutdownSentMsg:
 		m.quitting = true
-		return m, waitForCompletionCmd(m.client, m.workflowID)
+		return &m, waitForCompletionCmd(m.client, m.workflowID)
 
 	case ShutdownErrorMsg:
 		m.appendToViewport(fmt.Sprintf("Error sending shutdown: %v\n", msg.Err))
@@ -256,15 +259,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendToViewport("Session ended.\n")
 		}
 		m.quitting = true
-		return m, tea.Quit
+		return &m, tea.Quit
 
 	case SessionErrorMsg:
 		m.appendToViewport("Session closed.\n")
 		m.quitting = true
-		return m, tea.Quit
+		return &m, tea.Quit
 	}
 
-	return m, tea.Batch(cmds...)
+	return &m, tea.Batch(cmds...)
 }
 
 // View implements tea.Model.

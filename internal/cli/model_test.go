@@ -32,11 +32,23 @@ func newTestModel() Model {
 	return m
 }
 
-func TestModel_InitialState(t *testing.T) {
+func TestModel_InitialState_NoMessage(t *testing.T) {
 	config := Config{Model: "gpt-4o-mini", NoColor: true, NoMarkdown: true}
 	m := NewModel(config, nil)
-	assert.Equal(t, StateStartup, m.state)
+	assert.Equal(t, StateInput, m.state, "no message/session → start in input")
 	assert.Equal(t, -1, m.lastRenderedSeq)
+}
+
+func TestModel_InitialState_WithMessage(t *testing.T) {
+	config := Config{Model: "gpt-4o-mini", NoColor: true, NoMarkdown: true, Message: "hello"}
+	m := NewModel(config, nil)
+	assert.Equal(t, StateStartup, m.state, "with message → startup until workflow starts")
+}
+
+func TestModel_InitialState_WithSession(t *testing.T) {
+	config := Config{Model: "gpt-4o-mini", NoColor: true, NoMarkdown: true, Session: "codex-abc"}
+	m := NewModel(config, nil)
+	assert.Equal(t, StateStartup, m.state, "with session → startup until resume completes")
 }
 
 func TestModel_WorkflowStartedNewSession(t *testing.T) {
@@ -142,7 +154,7 @@ func TestModel_WorkflowStartErrorQuitsModel(t *testing.T) {
 	m.state = StateStartup
 
 	updated, cmd := m.Update(WorkflowStartErrorMsg{Err: assert.AnError})
-	um := updated.(Model)
+	um := updated.(*Model)
 	assert.True(t, um.quitting)
 	assert.NotNil(t, um.err)
 	assert.NotNil(t, cmd)
@@ -320,7 +332,7 @@ func TestModel_SessionCompletedQuitsModel(t *testing.T) {
 		TotalTokens:       1500,
 		ToolCallsExecuted: []string{"shell", "write_file"},
 	}})
-	um := updated.(Model)
+	um := updated.(*Model)
 	assert.True(t, um.quitting)
 	assert.Contains(t, um.viewportContent, "Session ended")
 }
@@ -330,7 +342,7 @@ func TestModel_UserInputSentTransitionsToWatching(t *testing.T) {
 	m.state = StateInput
 
 	updated, _ := m.Update(UserInputSentMsg{TurnID: "t1"})
-	um := updated.(Model)
+	um := updated.(*Model)
 	assert.Equal(t, StateWatching, um.state)
 	assert.Equal(t, "Thinking...", um.spinnerMsg)
 }
