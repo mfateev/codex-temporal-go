@@ -14,6 +14,21 @@ An LLM-driven coding agent that runs shell commands, reads/writes files, and sea
 - **3 approval modes**: `unless-trusted`, `never`, `on-failure`
 - **Temporal Cloud support** via envconfig (env vars, config files, TLS)
 
+## Install
+
+```bash
+go install github.com/mfateev/codex-temporal-go/cmd/tcx@latest
+go install github.com/mfateev/codex-temporal-go/cmd/worker@latest
+```
+
+Or build from source:
+```bash
+git clone https://github.com/mfateev/codex-temporal-go.git
+cd codex-temporal-go
+go build -o tcx ./cmd/tcx
+go build -o worker ./cmd/worker
+```
+
 ## Quick start
 
 ```bash
@@ -22,15 +37,15 @@ temporal server start-dev
 
 # 2. Start worker (terminal 2)
 export OPENAI_API_KEY=sk-...
-go run cmd/worker/main.go
+./worker
 
 # 3. Run tcx (terminal 3)
-go run cmd/tcx/main.go -m "List files in the current directory"
+./tcx -m "List files in the current directory"
 ```
 
 Or start an interactive session:
 ```bash
-go run cmd/tcx/main.go
+./tcx
 ```
 
 ## Connection
