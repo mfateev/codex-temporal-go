@@ -352,6 +352,8 @@ func (m *Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 
 	if !m.ready {
 		m.viewport = viewport.New(m.width, vpHeight)
+		m.viewport.MouseWheelEnabled = true
+		m.viewport.MouseWheelDelta = 3
 		m.viewport.SetContent(m.viewportContent)
 
 		m.renderer = NewItemRenderer(m.width, m.config.NoColor, m.config.NoMarkdown, m.styles)
@@ -774,6 +776,7 @@ func Run(config Config) error {
 	if !config.Inline {
 		opts = append(opts, tea.WithAltScreen())
 	}
+	opts = append(opts, tea.WithMouseCellMotion())
 
 	p := tea.NewProgram(model, opts...)
 	finalModel, err := p.Run()
