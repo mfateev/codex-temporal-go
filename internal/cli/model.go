@@ -514,15 +514,31 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, sendUserInputCmd(m.client, m.workflowID, line)
 	}
 
+	// Pre-expand textarea height for newline insertion (Shift+Enter / ctrl+j)
+	// so the internal viewport has room before the newline is added.
+	if msg.Type == tea.KeyCtrlJ {
+		newHeight := m.calculateTextareaHeight() + 1
+		if newHeight > MaxTextareaHeight {
+			newHeight = MaxTextareaHeight
+		}
+		if newHeight != m.textarea.Height() {
+			m.textarea.SetHeight(newHeight)
+			vpHeight := m.height - newHeight - 2
+			if vpHeight < 1 {
+				vpHeight = 1
+			}
+			m.viewport.Height = vpHeight
+		}
+	}
+
 	// Handle Shift+Enter and other input (textarea handles newlines automatically)
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
-	
+
 	// Dynamically adjust textarea height based on content
 	newHeight := m.calculateTextareaHeight()
 	if newHeight != m.textarea.Height() {
 		m.textarea.SetHeight(newHeight)
-		// Recalculate viewport height
 		vpHeight := m.height - newHeight - 2
 		if vpHeight < 1 {
 			vpHeight = 1
