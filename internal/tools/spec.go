@@ -68,6 +68,12 @@ func NewShellToolSpec() ToolSpec {
 				Description: "The timeout for the command in milliseconds",
 				Required:    false,
 			},
+			{
+				Name:        "working_directory",
+				Type:        "string",
+				Description: "Directory to execute the command in. Defaults to the session working directory.",
+				Required:    false,
+			},
 		},
 		DefaultTimeoutMs: DefaultShellTimeoutMs,
 	}
