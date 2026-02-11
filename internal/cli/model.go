@@ -496,6 +496,12 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, sendShutdownCmd(m.client, m.workflowID)
 		}
 
+		// Show user message in viewport
+		m.appendToViewport(m.renderer.RenderUserMessage(models.ConversationItem{
+			Type:    models.ItemTypeUserMessage,
+			Content: line,
+		}))
+
 		m.state = StateWatching
 		m.spinnerMsg = "Thinking..."
 		m.textarea.Blur()

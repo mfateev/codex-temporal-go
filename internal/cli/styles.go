@@ -54,7 +54,7 @@ type Styles struct {
 func DefaultStyles() Styles {
 	return Styles{
 		TurnSeparator:    lipgloss.NewStyle().Faint(true),
-		UserMessage:      lipgloss.NewStyle().Bold(true),
+		UserMessage:      lipgloss.NewStyle().Background(lipgloss.Color("236")).Padding(0, 1),
 		FunctionCallName: lipgloss.NewStyle().Foreground(lipgloss.Color("3")), // yellow
 		FunctionCallArgs: lipgloss.NewStyle(),
 		OutputSuccess:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")), // green

@@ -85,9 +85,9 @@ func (r *ItemRenderer) RenderTurnStarted(item models.ConversationItem) string {
 	return r.styles.TurnSeparator.Render(strings.Repeat("─", w)) + "\n"
 }
 
-// RenderUserMessage renders a user message (used only during resume).
+// RenderUserMessage renders a user message with a distinct background.
 func (r *ItemRenderer) RenderUserMessage(item models.ConversationItem) string {
-	return r.styles.UserMessage.Render("❯ "+item.Content) + "\n"
+	return r.styles.UserMessage.Render(item.Content) + "\n"
 }
 
 // RenderAssistantMessage renders an assistant message with optional markdown.
