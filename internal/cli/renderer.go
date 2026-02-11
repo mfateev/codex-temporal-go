@@ -2,46 +2,45 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
 	"github.com/mfateev/codex-temporal-go/internal/models"
+	"github.com/mfateev/codex-temporal-go/internal/workflow"
 	"golang.org/x/term"
 )
 
-// ANSI color codes.
-const (
-	colorReset  = "\033[0m"
-	colorBold   = "\033[1m"
-	colorFaint  = "\033[2m"
-	colorYellow = "\033[33m"
-	colorGreen  = "\033[32m"
-	colorRed    = "\033[31m"
-	colorCyan   = "\033[36m"
-)
-
-// Renderer writes conversation items to the terminal with ANSI formatting.
-type Renderer struct {
-	out        io.Writer
+// ItemRenderer renders conversation items as styled strings for the viewport.
+type ItemRenderer struct {
+	width      int
 	noColor    bool
 	noMarkdown bool
-	mdRenderer *glamour.TermRenderer // nil if noMarkdown or init failed
+	styles     Styles
+	mdRenderer *glamour.TermRenderer
 }
 
-// NewRenderer creates a renderer that writes to the given writer.
-func NewRenderer(out io.Writer, noColor, noMarkdown bool) *Renderer {
-	r := &Renderer{out: out, noColor: noColor, noMarkdown: noMarkdown}
+// NewItemRenderer creates a renderer for conversation items.
+func NewItemRenderer(width int, noColor, noMarkdown bool, styles Styles) *ItemRenderer {
+	r := &ItemRenderer{
+		width:      width,
+		noColor:    noColor,
+		noMarkdown: noMarkdown,
+		styles:     styles,
+	}
 	if !noMarkdown {
-		width := 80
-		if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
-			width = w
+		w := width
+		if w <= 0 {
+			w = 80
+			if tw, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && tw > 0 {
+				w = tw
+			}
 		}
 		md, err := glamour.NewTermRenderer(
 			glamour.WithStandardStyle("dark"),
-			glamour.WithWordWrap(width),
+			glamour.WithWordWrap(w),
 		)
 		if err == nil {
 			r.mdRenderer = md
@@ -50,120 +49,259 @@ func NewRenderer(out io.Writer, noColor, noMarkdown bool) *Renderer {
 	return r
 }
 
-// RenderItem renders a single conversation item to the terminal.
-// Returns true if the item was rendered (i.e., produced visible output).
-func (r *Renderer) RenderItem(item models.ConversationItem) bool {
+// RenderItem renders a single conversation item as a string.
+// isResume controls whether user messages are shown (they are during resume).
+// Returns empty string if the item produces no visible output.
+func (r *ItemRenderer) RenderItem(item models.ConversationItem, isResume bool) string {
 	switch item.Type {
 	case models.ItemTypeTurnStarted:
-		r.renderTurnStarted(item)
-		return true
+		return r.RenderTurnStarted(item)
 	case models.ItemTypeUserMessage:
-		// User messages typed by the user are already echoed by readline.
-		// Only render if resuming a session (we detect this by checking if
-		// we're rendering history, but the caller handles that).
-		return false
+		if isResume {
+			return r.RenderUserMessage(item)
+		}
+		return ""
 	case models.ItemTypeAssistantMessage:
-		r.renderAssistantMessage(item)
-		return true
+		return r.RenderAssistantMessage(item)
 	case models.ItemTypeFunctionCall:
-		r.renderFunctionCall(item)
-		return true
+		return r.RenderFunctionCall(item)
 	case models.ItemTypeFunctionCallOutput:
-		r.renderFunctionCallOutput(item)
-		return true
+		return r.RenderFunctionCallOutput(item)
 	case models.ItemTypeTurnComplete:
-		// Silent — triggers state transition in the main loop.
-		return false
+		return ""
 	default:
-		return false
+		return ""
 	}
 }
 
-// RenderItemForResume renders an item during session resume (shows user messages too).
-func (r *Renderer) RenderItemForResume(item models.ConversationItem) {
-	switch item.Type {
-	case models.ItemTypeTurnStarted:
-		r.renderTurnStarted(item)
-	case models.ItemTypeUserMessage:
-		r.renderUserMessage(item)
-	case models.ItemTypeAssistantMessage:
-		r.renderAssistantMessage(item)
-	case models.ItemTypeFunctionCall:
-		r.renderFunctionCall(item)
-	case models.ItemTypeFunctionCallOutput:
-		r.renderFunctionCallOutput(item)
-	case models.ItemTypeTurnComplete:
-		// Silent
-	}
+// RenderTurnStarted renders a turn separator.
+func (r *ItemRenderer) RenderTurnStarted(item models.ConversationItem) string {
+	line := fmt.Sprintf("── Turn %s ──", item.TurnID)
+	return r.styles.TurnSeparator.Render(line) + "\n"
 }
 
-// RenderStatusLine prints a summary status after a turn completes.
-func (r *Renderer) RenderStatusLine(model string, totalTokens, turnCount int) {
-	line := fmt.Sprintf("[%s · %s tokens · turn %d]",
-		model, formatTokens(totalTokens), turnCount)
-	fmt.Fprintf(r.out, "%s%s%s\n", r.color(colorFaint), line, r.color(colorReset))
+// RenderUserMessage renders a user message.
+func (r *ItemRenderer) RenderUserMessage(item models.ConversationItem) string {
+	return r.styles.UserMessage.Render("> "+item.Content) + "\n"
 }
 
-func (r *Renderer) renderTurnStarted(item models.ConversationItem) {
-	fmt.Fprintf(r.out, "%s── Turn %s ──%s\n",
-		r.color(colorFaint), item.TurnID, r.color(colorReset))
-}
-
-func (r *Renderer) renderUserMessage(item models.ConversationItem) {
-	fmt.Fprintf(r.out, "%s> %s%s\n",
-		r.color(colorBold), item.Content, r.color(colorReset))
-}
-
-func (r *Renderer) renderAssistantMessage(item models.ConversationItem) {
+// RenderAssistantMessage renders an assistant message with optional markdown.
+func (r *ItemRenderer) RenderAssistantMessage(item models.ConversationItem) string {
 	content := item.Content
 	if content == "" {
-		return
+		return ""
 	}
 	if r.mdRenderer != nil {
 		rendered, err := r.mdRenderer.Render(content)
 		if err == nil {
-			fmt.Fprint(r.out, rendered)
-			return
+			return rendered
 		}
 	}
-	// Plain text fallback when markdown is disabled or rendering fails.
-	fmt.Fprintf(r.out, "\n%s\n\n", content)
+	return "\n" + content + "\n\n"
 }
 
-func (r *Renderer) renderFunctionCall(item models.ConversationItem) {
-	args := item.Arguments
-	if len(args) > 200 {
-		args = args[:200] + "..."
+// RenderFunctionCall renders a function call invocation in Codex style.
+// Example: "• Ran echo hello"
+func (r *ItemRenderer) RenderFunctionCall(item models.ConversationItem) string {
+	verb, detail := formatToolCall(item.Name, item.Arguments)
+	bullet := r.styles.ToolBullet.Render("•")
+	styledVerb := r.styles.ToolVerb.Render(verb)
+	if detail != "" {
+		return bullet + " " + styledVerb + " " + detail + "\n"
 	}
-	fmt.Fprintf(r.out, "%s⚡ %s%s %s\n",
-		r.color(colorYellow), item.Name, r.color(colorReset), args)
+	return bullet + " " + styledVerb + "\n"
 }
 
-func (r *Renderer) renderFunctionCallOutput(item models.ConversationItem) {
+// RenderFunctionCallOutput renders function call output in Codex style.
+// Uses 5-line limit with middle truncation and tree-style prefixes.
+func (r *ItemRenderer) RenderFunctionCallOutput(item models.ConversationItem) string {
 	if item.Output == nil {
-		return
-	}
-
-	content := item.Output.Content
-	// Truncate long output
-	lines := strings.Split(content, "\n")
-	if len(lines) > 20 {
-		content = strings.Join(lines[:20], "\n") + fmt.Sprintf("\n... (%d more lines)", len(lines)-20)
-	}
-
-	color := r.color(colorGreen)
-	if item.Output.Success != nil && !*item.Output.Success {
-		color = r.color(colorRed)
-	}
-
-	fmt.Fprintf(r.out, "%s  %s%s\n", color, indent(content, "  "), r.color(colorReset))
-}
-
-func (r *Renderer) color(code string) string {
-	if r.noColor {
 		return ""
 	}
-	return code
+
+	isFailure := item.Output.Success != nil && !*item.Output.Success
+	content := strings.TrimRight(item.Output.Content, "\n")
+
+	if content == "" {
+		line := r.styles.OutputPrefix.Render("  └ ") + r.styles.OutputDim.Render("(no output)")
+		return line + "\n"
+	}
+
+	lines := strings.Split(content, "\n")
+	displayed, _ := truncateMiddle(lines, 5)
+
+	var b strings.Builder
+	for i, line := range displayed {
+		var prefix string
+		if i == 0 {
+			prefix = r.styles.OutputPrefix.Render("  └ ")
+		} else {
+			prefix = r.styles.OutputPrefix.Render("    ")
+		}
+		if isFailure {
+			b.WriteString(prefix + r.styles.OutputFailure.Render(line) + "\n")
+		} else {
+			b.WriteString(prefix + r.styles.OutputDim.Render(line) + "\n")
+		}
+	}
+
+	return b.String()
+}
+
+// RenderApprovalPrompt renders the approval prompt for pending tool calls.
+func (r *ItemRenderer) RenderApprovalPrompt(approvals []workflow.PendingApproval) string {
+	var b strings.Builder
+	b.WriteString("\n")
+	for i, ap := range approvals {
+		idx := r.styles.ApprovalIndex.Render(fmt.Sprintf("[%d]", i+1))
+		tool := r.styles.ApprovalTool.Render("Tool:") + " " + ap.ToolName
+		b.WriteString(fmt.Sprintf("  %s %s\n", idx, tool))
+		b.WriteString(fmt.Sprintf("      %s\n", formatApprovalDetail(ap.ToolName, ap.Arguments)))
+		if ap.Reason != "" {
+			reason := r.styles.ApprovalReason.Render("Reason:") + " " + ap.Reason
+			b.WriteString(fmt.Sprintf("      %s\n", reason))
+		}
+		b.WriteString("\n")
+	}
+	if len(approvals) > 1 {
+		b.WriteString("Allow? [y]es / [n]o / [a]lways / 1,2 (select by index): ")
+	} else {
+		b.WriteString("Allow? [y]es / [n]o / [a]lways: ")
+	}
+	return b.String()
+}
+
+// RenderEscalationPrompt renders the escalation prompt for failed sandboxed calls.
+func (r *ItemRenderer) RenderEscalationPrompt(escalations []workflow.EscalationRequest) string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(r.styles.EscalationHeader.Render("Sandbox failure — escalation needed:") + "\n\n")
+	for i, esc := range escalations {
+		idx := r.styles.ApprovalIndex.Render(fmt.Sprintf("[%d]", i+1))
+		tool := r.styles.ApprovalTool.Render("Tool:") + " " + esc.ToolName
+		b.WriteString(fmt.Sprintf("  %s %s\n", idx, tool))
+		b.WriteString(fmt.Sprintf("      %s\n", formatApprovalDetail(esc.ToolName, esc.Arguments)))
+		if esc.Output != "" {
+			outputPreview := esc.Output
+			if len(outputPreview) > 200 {
+				outputPreview = outputPreview[:200] + "..."
+			}
+			label := r.styles.EscalationOutput.Render("Output:")
+			b.WriteString(fmt.Sprintf("      %s %s\n", label, outputPreview))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("Re-run without sandbox? [y]es / [n]o: ")
+	return b.String()
+}
+
+// RenderStatusLine renders a summary status after a turn completes.
+func (r *ItemRenderer) RenderStatusLine(model string, totalTokens, turnCount int) string {
+	line := fmt.Sprintf("[%s · %s tokens · turn %d]",
+		model, formatTokens(totalTokens), turnCount)
+	return r.styles.StatusLine.Render(line) + "\n"
+}
+
+// PhaseMessage returns a human-friendly message for a turn phase.
+func PhaseMessage(phase workflow.TurnPhase, toolsInFlight []string) string {
+	switch phase {
+	case workflow.PhaseLLMCalling:
+		return "Thinking..."
+	case workflow.PhaseToolExecuting:
+		if len(toolsInFlight) > 0 {
+			return fmt.Sprintf("Running %s...", toolsInFlight[0])
+		}
+		return "Running tool..."
+	case workflow.PhaseApprovalPending:
+		return "Waiting for approval..."
+	case workflow.PhaseEscalationPending:
+		return "Waiting for escalation decision..."
+	default:
+		return "Working..."
+	}
+}
+
+// formatToolCall parses the tool name and JSON arguments, returning a
+// human-readable verb and detail string matching the Codex output style.
+//
+//	shell        → ("Ran", "echo hello")
+//	read_file    → ("Read", "/tmp/foo.txt")
+//	write_file   → ("Wrote", "/tmp/bar.txt")
+//	apply_patch  → ("Patched", "")
+//	list_dir     → ("Listed", "/tmp")
+//	grep_files   → ("Searched", `"TODO" in src/`)
+//	unknown      → ("Ran", "unknown_tool(…)")
+func formatToolCall(name, argsJSON string) (verb, detail string) {
+	var args map[string]interface{}
+	_ = json.Unmarshal([]byte(argsJSON), &args)
+
+	switch name {
+	case "shell":
+		if cmd, ok := args["command"].(string); ok {
+			return "Ran", truncateString(cmd, 120)
+		}
+		return "Ran", truncateString(argsJSON, 120)
+	case "read_file":
+		if fp, ok := args["file_path"].(string); ok {
+			return "Read", fp
+		}
+		return "Read", ""
+	case "write_file":
+		if fp, ok := args["file_path"].(string); ok {
+			return "Wrote", fp
+		}
+		return "Wrote", ""
+	case "apply_patch":
+		return "Patched", ""
+	case "list_dir":
+		if dp, ok := args["dir_path"].(string); ok {
+			return "Listed", dp
+		}
+		if dp, ok := args["path"].(string); ok {
+			return "Listed", dp
+		}
+		return "Listed", ""
+	case "grep_files":
+		var parts []string
+		if pat, ok := args["pattern"].(string); ok {
+			parts = append(parts, fmt.Sprintf("%q", pat))
+		}
+		if dir, ok := args["path"].(string); ok {
+			parts = append(parts, "in "+dir)
+		}
+		if len(parts) > 0 {
+			return "Searched", strings.Join(parts, " ")
+		}
+		return "Searched", ""
+	default:
+		detail := name + "(" + truncateString(argsJSON, 80) + ")"
+		return "Ran", detail
+	}
+}
+
+// truncateMiddle returns at most limit lines. When the input exceeds the limit,
+// it keeps the first 2 and last 2 lines with a "… +N lines" placeholder in between.
+// The returned omitted count reflects lines replaced by the placeholder.
+func truncateMiddle(lines []string, limit int) (result []string, omitted int) {
+	if len(lines) <= limit {
+		return lines, 0
+	}
+	head := 2
+	tail := 2
+	omitted = len(lines) - head - tail
+	result = make([]string, 0, head+1+tail)
+	result = append(result, lines[:head]...)
+	result = append(result, fmt.Sprintf("… +%d lines", omitted))
+	result = append(result, lines[len(lines)-tail:]...)
+	return result, omitted
+}
+
+// truncateString truncates s to maxLen characters, appending "…" if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }
 
 func indent(s, prefix string) string {

@@ -4,9 +4,12 @@
 package workflow
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/log"
@@ -23,6 +26,14 @@ import (
 
 // IdleTimeout is how long the workflow waits for user input before triggering ContinueAsNew.
 const IdleTimeout = 24 * time.Hour
+
+// maxIterationsBeforeCAN is the total iteration count across all turns in a
+// single workflow run before triggering ContinueAsNew to keep history bounded.
+const maxIterationsBeforeCAN = 100
+
+// maxRepeatToolCalls is the number of consecutive identical tool call batches
+// before the turn is ended early to prevent tight loops.
+const maxRepeatToolCalls = 3
 
 // AgenticWorkflow is the main durable agentic loop.
 //
@@ -387,6 +398,14 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context) (WorkflowResult, e
 			return s.continueAsNew(ctx)
 		}
 
+		// Accumulate iterations for CAN threshold across turns.
+		s.TotalIterationsForCAN += s.IterationCount
+		if s.TotalIterationsForCAN >= maxIterationsBeforeCAN {
+			logger.Info("Total iterations across turns reached CAN threshold",
+				"total", s.TotalIterationsForCAN)
+			return s.continueAsNew(ctx)
+		}
+
 		// Turn complete — add TurnComplete marker (unless interrupted, which already added it)
 		if !s.Interrupted {
 			_ = s.History.AddItem(models.ConversationItem{
@@ -494,10 +513,23 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 					continue
 
 				case models.LLMErrTypeFatal:
-					return false, fmt.Errorf("fatal error: %w", err)
+					logger.Error("Fatal LLM error, ending turn", "error", err)
+					_ = s.History.AddItem(models.ConversationItem{
+						Type:    models.ItemTypeAssistantMessage,
+						Content: fmt.Sprintf("[Error: %s]", appErr.Message()),
+						TurnID:  s.CurrentTurnID,
+					})
+					return false, nil
 				}
 			}
-			return false, fmt.Errorf("LLM activity failed: %w", err)
+			// General activity error (timeout, unknown, etc.) — surface to user
+			logger.Error("LLM activity failed, ending turn", "error", err)
+			_ = s.History.AddItem(models.ConversationItem{
+				Type:    models.ItemTypeAssistantMessage,
+				Content: fmt.Sprintf("[Error: LLM call failed: %v]", err),
+				TurnID:  s.CurrentTurnID,
+			})
+			return false, nil
 		}
 
 		// Check for interrupt after LLM call
@@ -528,6 +560,19 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 			if item.Type == models.ItemTypeFunctionCall {
 				functionCalls = append(functionCalls, item)
 			}
+		}
+
+		// Detect repeated identical tool calls (tight-loop prevention).
+		// If the LLM is calling the same tools with the same args repeatedly,
+		// it's likely stuck. End the turn early so the user can intervene.
+		if len(functionCalls) > 0 && s.detectRepeatedToolCalls(functionCalls) {
+			logger.Warn("Detected repeated identical tool calls",
+				"repeat_count", s.repeatCount)
+			_ = s.History.AddItem(models.ConversationItem{
+				Type:    models.ItemTypeAssistantMessage,
+				Content: "[Turn ended: detected repeated identical tool calls. Please try a different approach.]",
+			})
+			return false, nil
 		}
 
 		// Execute tools if present (parallel execution)
@@ -615,7 +660,12 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 
 			toolResults, err := executeToolsInParallel(ctx, functionCalls, s.ToolSpecs, s.Config.Cwd, s.Config.SessionTaskQueue)
 			if err != nil {
-				return false, fmt.Errorf("failed to execute tools: %w", err)
+				_ = s.History.AddItem(models.ConversationItem{
+					Type:    models.ItemTypeAssistantMessage,
+					Content: fmt.Sprintf("[Error: tool execution failed: %v]", err),
+					TurnID:  s.CurrentTurnID,
+				})
+				return false, nil
 			}
 
 			// Clear tools in flight
@@ -674,18 +724,16 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 		return false, nil
 	}
 
-	// Max iterations reached — need ContinueAsNew
+	// Max iterations reached — end the turn with a message so the user can
+	// decide what to do next. Previously this triggered ContinueAsNew which
+	// allowed runaway loops to continue indefinitely across new workflow runs.
 	if s.IterationCount >= s.MaxIterations {
-		logger.Info("Max iterations reached, triggering ContinueAsNew")
-
-		tokenCount, _ := s.History.EstimateTokenCount()
-		contextUsage := float64(tokenCount) / float64(s.Config.Model.ContextWindow)
-
-		if contextUsage > 0.8 {
-			logger.Info("High context usage", "usage", contextUsage)
-		}
-
-		return true, nil
+		logger.Warn("Max iterations per turn reached", "iterations", s.IterationCount)
+		_ = s.History.AddItem(models.ConversationItem{
+			Type:    models.ItemTypeAssistantMessage,
+			Content: fmt.Sprintf("[Turn ended: reached maximum of %d iterations without completing. The task may need to be broken into smaller steps.]", s.MaxIterations),
+		})
+		return false, nil
 	}
 
 	return false, nil
@@ -1044,8 +1092,43 @@ func (s *SessionState) loadExecPolicy(ctx workflow.Context) {
 	logger.Info("Exec policy loaded", "rules_len", len(loadResult.RulesSource))
 }
 
+// sandboxDenialKeywords are output strings that indicate a sandbox/permission
+// denial rather than a normal command failure.
+// Matches Codex: codex-rs/core/src/exec.rs SANDBOX_DENIED_KEYWORDS
+var sandboxDenialKeywords = []string{
+	"operation not permitted",
+	"permission denied",
+	"read-only file system",
+	"seccomp",
+	"sandbox",
+	"landlock",
+	"failed to write file",
+}
+
+// isLikelySandboxDenial checks whether a failed tool result looks like it was
+// blocked by a sandbox rather than failing for an ordinary reason (file not
+// found, invalid args, etc.).
+func isLikelySandboxDenial(output string) bool {
+	lower := strings.ToLower(output)
+	for _, kw := range sandboxDenialKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// truncate returns s truncated to n bytes with "..." appended if it was longer.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 // handleOnFailureEscalation checks for failed tools in on-failure mode.
-// For failed tools, prompts the user to re-execute without sandbox.
+// For failed tools that look like sandbox denials, prompts the user to
+// re-execute without sandbox. Normal failures are passed through to the LLM.
 // Returns updated tool results (may include re-executed results).
 func (s *SessionState) handleOnFailureEscalation(
 	ctx workflow.Context,
@@ -1060,14 +1143,21 @@ func (s *SessionState) handleOnFailureEscalation(
 
 	for i, result := range toolResults {
 		if result.Success != nil && !*result.Success {
-			failedIndices[i] = true
-			escalations = append(escalations, EscalationRequest{
-				CallID:    result.CallID,
-				ToolName:  functionCalls[i].Name,
-				Arguments: functionCalls[i].Arguments,
-				Output:    result.Content,
-				Reason:    "command failed in sandbox",
-			})
+			if isLikelySandboxDenial(result.Content) {
+				// Looks like sandbox blocked it — escalate to user
+				failedIndices[i] = true
+				escalations = append(escalations, EscalationRequest{
+					CallID:    result.CallID,
+					ToolName:  functionCalls[i].Name,
+					Arguments: functionCalls[i].Arguments,
+					Output:    result.Content,
+					Reason:    "command failed in sandbox",
+				})
+			} else {
+				// Normal failure (file not found, bad args, etc.) — let LLM see it
+				logger.Info("Tool failed but not sandbox-related, returning to LLM",
+					"tool", functionCalls[i].Name, "output_prefix", truncate(result.Content, 100))
+			}
 		}
 	}
 
@@ -1164,6 +1254,36 @@ func applyApprovalDecision(functionCalls []models.ConversationItem, resp *Approv
 	}
 
 	return approved, denied
+}
+
+// detectRepeatedToolCalls checks whether the current batch of tool calls is
+// identical to the previous batch. Returns true if the same batch has been
+// seen maxRepeatToolCalls times consecutively, indicating a tight loop.
+func (s *SessionState) detectRepeatedToolCalls(calls []models.ConversationItem) bool {
+	key := toolCallsKey(calls)
+	if key == s.lastToolKey {
+		s.repeatCount++
+	} else {
+		s.lastToolKey = key
+		s.repeatCount = 1
+	}
+	return s.repeatCount >= maxRepeatToolCalls
+}
+
+// toolCallsKey produces a deterministic hash for a batch of tool calls
+// based on tool names and arguments, used for repeat detection.
+func toolCallsKey(calls []models.ConversationItem) string {
+	// Build a sorted list of "name:args" strings for deterministic ordering.
+	parts := make([]string, len(calls))
+	for i, c := range calls {
+		parts[i] = c.Name + ":" + c.Arguments
+	}
+	sort.Strings(parts)
+	h := sha256.New()
+	for _, p := range parts {
+		h.Write([]byte(p))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // toInt64 converts a JSON-decoded number (float64) to int64.

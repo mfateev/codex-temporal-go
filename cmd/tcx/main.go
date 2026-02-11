@@ -1,7 +1,7 @@
 // tcx is the interactive CLI for codex-temporal-go workflows.
 //
-// A REPL-style interface that connects to a Temporal workflow,
-// shows conversation items as they appear, and lets you type
+// A TUI-based interface that connects to a Temporal workflow,
+// shows conversation items in a scrollable viewport, and lets you type
 // follow-up messages.
 //
 // Usage:
@@ -10,6 +10,7 @@
 //	tcx                               Start new session, enter input immediately
 //	tcx --session <id>               Resume existing session
 //	tcx -m "hello" --model gpt-4o    Use a specific model
+//	tcx --inline                     Run without alt-screen (inline mode)
 package main
 
 import (
@@ -30,11 +31,11 @@ func main() {
 	session := flag.String("session", "", "Resume existing session")
 	workflowID := flag.String("workflow-id", "", "Resume existing session (alias for --session)")
 	model := flag.String("model", "gpt-4o-mini", "LLM model to use")
+	provider := flag.String("provider", "", "LLM provider override (openai, anthropic, google)")
 	temporalHost := flag.String("temporal-host", "", "Temporal server address (overrides envconfig/env vars)")
 	noMarkdown := flag.Bool("no-markdown", false, "Disable markdown rendering")
 	noColor := flag.Bool("no-color", false, "Disable colored output")
-	enableShell := flag.Bool("enable-shell", true, "Enable shell tool")
-	enableRead := flag.Bool("enable-read-file", true, "Enable read_file tool")
+	inline := flag.Bool("inline", false, "Disable alt-screen mode (inline output)")
 	fullAuto := flag.Bool("full-auto", false, "Auto-approve all tool calls without prompting")
 	approvalMode := flag.String("approval-mode", "", "Approval mode: unless-trusted, never, on-failure")
 	sandboxMode := flag.String("sandbox", "", "Sandbox mode: full-access, read-only, workspace-write")
@@ -97,6 +98,12 @@ func main() {
 		}
 	}
 
+	// Smart provider detection from model name
+	resolvedProvider := *provider
+	if resolvedProvider == "" {
+		resolvedProvider = cli.DetectProvider(*model)
+	}
+
 	config := cli.Config{
 		TemporalHost:             *temporalHost,
 		Session:                  sess,
@@ -104,8 +111,6 @@ func main() {
 		Model:                    *model,
 		NoMarkdown:               *noMarkdown,
 		NoColor:                  *noColor,
-		EnableShell:              *enableShell,
-		EnableRead:               *enableRead,
 		ApprovalMode:             resolvedApproval,
 		SandboxMode:              *sandboxMode,
 		SandboxWritableRoots:     writableRoots,
@@ -113,10 +118,11 @@ func main() {
 		CodexHome:                configDir,
 		CLIProjectDocs:           cliProjectDocs,
 		UserPersonalInstructions: userPersonalInstructions,
+		Provider:                 resolvedProvider,
+		Inline:                   *inline,
 	}
 
-	app := cli.NewApp(config)
-	if err := app.Run(); err != nil {
+	if err := cli.Run(config); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

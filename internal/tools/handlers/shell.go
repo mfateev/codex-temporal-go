@@ -83,11 +83,19 @@ func (t *ShellTool) Handle(ctx context.Context, invocation *tools.ToolInvocation
 		return nil, tools.NewValidationError("command cannot be empty")
 	}
 
+	// Use LLM-provided workdir if set, otherwise fall back to session cwd.
+	cwd := invocation.Cwd
+	if workdirArg, ok := invocation.Arguments["workdir"]; ok {
+		if wd, ok := workdirArg.(string); ok && wd != "" {
+			cwd = wd
+		}
+	}
+
 	// Build the command spec and apply sandbox if configured
 	spec := sandbox.CommandSpec{
 		Program: "bash",
 		Args:    []string{"-c", command},
-		Cwd:     invocation.Cwd,
+		Cwd:     cwd,
 	}
 
 	execEnv, err := t.resolveExecEnv(spec, invocation.SandboxPolicy)

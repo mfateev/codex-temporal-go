@@ -43,22 +43,29 @@ type ToolParameter struct {
 
 // NewShellToolSpec creates the specification for the shell tool.
 //
-// Maps to: codex-rs/core/src/tools/spec.rs shell tool spec
+// Maps to: codex-rs/core/src/tools/spec.rs create_shell_command_tool
 func NewShellToolSpec() ToolSpec {
 	return ToolSpec{
-		Name:        "shell",
-		Description: "Execute a shell command and return the output. Use this to run bash commands, list files, read command output, etc.",
+		Name: "shell",
+		Description: `Runs a shell command and returns its output.
+- Always set the ` + "`workdir`" + ` param when using the shell function. Do not use ` + "`cd`" + ` unless absolutely necessary.`,
 		Parameters: []ToolParameter{
 			{
 				Name:        "command",
 				Type:        "string",
-				Description: "The shell command to execute (will be run with bash -c)",
+				Description: "The shell script to execute in the user's default shell",
 				Required:    true,
+			},
+			{
+				Name:        "workdir",
+				Type:        "string",
+				Description: "The working directory to execute the command in",
+				Required:    false,
 			},
 			{
 				Name:        "timeout_ms",
 				Type:        "number",
-				Description: "The timeout for the command in milliseconds. Defaults to 10000 (10s). Use longer timeouts for builds, installs, or test suites.",
+				Description: "The timeout for the command in milliseconds",
 				Required:    false,
 			},
 			{
@@ -74,28 +81,28 @@ func NewShellToolSpec() ToolSpec {
 
 // NewReadFileToolSpec creates the specification for the read_file tool.
 //
-// Maps to: codex-rs/core/src/tools/handlers/read_file.rs tool spec
+// Maps to: codex-rs/core/src/tools/spec.rs create_read_file_tool
 func NewReadFileToolSpec() ToolSpec {
 	return ToolSpec{
 		Name:        "read_file",
-		Description: "Read the contents of a file. Returns the file content with line numbers.",
+		Description: "Reads a local file with 1-indexed line numbers, supporting slice and indentation-aware block modes.",
 		Parameters: []ToolParameter{
 			{
-				Name:        "path",
+				Name:        "file_path",
 				Type:        "string",
-				Description: "The path to the file to read",
+				Description: "Absolute path to the file",
 				Required:    true,
 			},
 			{
 				Name:        "offset",
-				Type:        "integer",
-				Description: "Starting line number (0-indexed, optional)",
+				Type:        "number",
+				Description: "The line number to start reading from. Must be 1 or greater.",
 				Required:    false,
 			},
 			{
 				Name:        "limit",
-				Type:        "integer",
-				Description: "Maximum number of lines to read (optional)",
+				Type:        "number",
+				Description: "The maximum number of lines to return.",
 				Required:    false,
 			},
 		},
@@ -126,11 +133,27 @@ Each operation starts with one of three headers:
 
 May be immediately followed by *** Move to: <new path> if you want to rename the file.
 Then one or more "hunks", each introduced by @@ (optionally followed by a hunk header).
-Within a hunk each line starts with ' ' (context), '-' (removed), or '+' (added).
+Within a hunk each line starts with:
 
-For context: show 3 lines of code immediately above and 3 lines immediately below each change. If 3 lines of context is insufficient to uniquely identify the snippet of code within the file, use the @@ operator to indicate the class or function to which the snippet belongs.
+For instructions on [context_before] and [context_after]:
+- By default, show 3 lines of code immediately above and 3 lines immediately below each change. If a change is within 3 lines of a previous change, do NOT duplicate the first change's [context_after] lines in the second change's [context_before] lines.
+- If 3 lines of context is insufficient to uniquely identify the snippet of code within the file, use the @@ operator to indicate the class or function to which the snippet belongs. For instance, we might have:
+@@ class BaseClass
+[3 lines of pre-context]
+- [old_code]
++ [new_code]
+[3 lines of post-context]
 
-The full grammar:
+- If a code block is repeated so many times in a class or function such that even a single @@ statement and 3 lines of context cannot uniquely identify the snippet of code, you can use multiple @@ statements to jump to the right context. For instance:
+
+@@ class BaseClass
+@@   def method():
+[3 lines of pre-context]
+- [old_code]
++ [new_code]
+[3 lines of post-context]
+
+The full grammar definition is below:
 Patch := Begin { FileOp } End
 Begin := "*** Begin Patch" NEWLINE
 End := "*** End Patch" NEWLINE
@@ -140,7 +163,26 @@ DeleteFile := "*** Delete File: " path NEWLINE
 UpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }
 MoveTo := "*** Move to: " newPath NEWLINE
 Hunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]
-HunkLine := (" " | "-" | "+") text NEWLINE`,
+HunkLine := (" " | "-" | "+") text NEWLINE
+
+A full patch can combine several operations:
+
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+
+It is important to remember:
+
+- You must include a header with your intended action (Add/Delete/Update)
+- You must prefix new lines with + even when creating a new file
+- File references can only be relative, NEVER ABSOLUTE.`,
 		Parameters: []ToolParameter{
 			{
 				Name:        "input",
