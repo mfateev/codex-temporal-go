@@ -22,6 +22,7 @@ import (
 	"github.com/mfateev/codex-temporal-go/internal/instructions"
 	"github.com/mfateev/codex-temporal-go/internal/models"
 	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/codex-temporal-go/internal/version"
 )
 
 // IdleTimeout is how long the workflow waits for user input before triggering ContinueAsNew.
@@ -133,6 +134,7 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 			IterationCount:          s.IterationCount,
 			TotalTokens:             s.TotalTokens,
 			TurnCount:               turnCount,
+			WorkerVersion:           version.GitCommit,
 		}, nil
 	})
 	if err != nil {

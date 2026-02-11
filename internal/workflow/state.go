@@ -68,6 +68,7 @@ type TurnStatus struct {
 	IterationCount          int                      `json:"iteration_count"`
 	TotalTokens             int                      `json:"total_tokens"`
 	TurnCount               int                      `json:"turn_count"`
+	WorkerVersion           string                   `json:"worker_version,omitempty"`
 }
 
 // WorkflowInput is the initial input to start a conversation.

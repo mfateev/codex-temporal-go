@@ -97,10 +97,11 @@ type Model struct {
 	renderer *ItemRenderer
 
 	// Status
-	modelName  string
-	totalTokens int
-	turnCount  int
-	spinnerMsg string
+	modelName     string
+	totalTokens   int
+	turnCount     int
+	spinnerMsg    string
+	workerVersion string
 
 	// Approval state
 	pendingApprovals   []workflow.PendingApproval
@@ -361,7 +362,11 @@ func (m Model) renderStatusBar() string {
 		stateLabel = ""
 	}
 
-	bar := fmt.Sprintf(" %s · %s tokens · %s · %s · cli:%s", model, tokens, turn, stateLabel, version.GitCommit)
+	wv := m.workerVersion
+	if wv == "" {
+		wv = "?"
+	}
+	bar := fmt.Sprintf(" %s · %s tokens · %s · %s · cli:%s · worker:%s", model, tokens, turn, stateLabel, version.GitCommit, wv)
 	return m.styles.StatusBar.Render(bar)
 }
 
@@ -878,6 +883,9 @@ func (m *Model) handlePollResult(msg PollResultMsg) (tea.Model, tea.Cmd) {
 	m.spinnerMsg = PhaseMessage(result.Status.Phase, result.Status.ToolsInFlight)
 	m.totalTokens = result.Status.TotalTokens
 	m.turnCount = result.Status.TurnCount
+	if result.Status.WorkerVersion != "" {
+		m.workerVersion = result.Status.WorkerVersion
+	}
 
 	// Check for approval pending
 	if result.Status.Phase == workflow.PhaseApprovalPending &&
