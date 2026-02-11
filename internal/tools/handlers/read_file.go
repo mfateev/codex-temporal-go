@@ -39,9 +39,13 @@ func (t *ReadFileTool) IsMutating(invocation *tools.ToolInvocation) bool {
 //
 // Maps to: codex-rs/core/src/tools/handlers/read_file.rs handle
 func (t *ReadFileTool) Handle(_ context.Context, invocation *tools.ToolInvocation) (*tools.ToolOutput, error) {
-	pathArg, ok := invocation.Arguments["path"]
+	// Accept both "file_path" (upstream name) and "path" (legacy).
+	pathArg, ok := invocation.Arguments["file_path"]
 	if !ok {
-		return nil, tools.NewValidationError("missing required argument: path")
+		pathArg, ok = invocation.Arguments["path"]
+	}
+	if !ok {
+		return nil, tools.NewValidationError("missing required argument: file_path")
 	}
 
 	path, ok := pathArg.(string)
@@ -53,7 +57,9 @@ func (t *ReadFileTool) Handle(_ context.Context, invocation *tools.ToolInvocatio
 		return nil, tools.NewValidationError("path cannot be empty")
 	}
 
-	offset := 0
+	// Offset is 1-indexed (upstream convention). offset=1 means start from
+	// the first line. We convert to 0-indexed internally for line skipping.
+	offset := 0 // 0 means "not set" — read from beginning
 	if offsetArg, ok := invocation.Arguments["offset"]; ok {
 		switch v := offsetArg.(type) {
 		case int:
@@ -92,7 +98,15 @@ func (t *ReadFileTool) Handle(_ context.Context, invocation *tools.ToolInvocatio
 	lineNum := 0
 	linesRead := 0
 
-	for lineNum < offset && scanner.Scan() {
+	// Convert 1-indexed offset to number of lines to skip.
+	// offset <= 0 or unset: start from beginning (skip 0).
+	// offset >= 1: skip (offset-1) lines.
+	skipLines := 0
+	if offset > 1 {
+		skipLines = offset - 1
+	}
+
+	for lineNum < skipLines && scanner.Scan() {
 		lineNum++
 	}
 
