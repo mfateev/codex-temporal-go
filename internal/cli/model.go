@@ -190,12 +190,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKeyMsg(msg)
 
-	case tea.MouseMsg:
-		// Route all mouse events to viewport (handles wheel scrolling)
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return &m, cmd
-
 	case spinner.TickMsg:
 		if m.state == StateWatching || m.state == StateStartup {
 			var cmd tea.Cmd
@@ -815,11 +809,13 @@ func Run(config Config) error {
 	if !config.Inline {
 		opts = append(opts, tea.WithAltScreen())
 	}
-	// Enable mouse cell motion for wheel scroll support.
-	// Text selection still works via Shift+click in most terminals.
-	opts = append(opts, tea.WithMouseCellMotion())
-
 	p := tea.NewProgram(model, opts...)
+
+	// Enable CSI 1007 alternate scroll mode: the terminal translates mouse
+	// wheel events into arrow key sequences. This gives us wheel scrolling
+	// without capturing the mouse, so normal text selection keeps working.
+	fmt.Fprint(os.Stderr, "\x1b[?1007h")
+	defer fmt.Fprint(os.Stderr, "\x1b[?1007l")
 
 	finalModel, err := p.Run()
 	if err != nil {
