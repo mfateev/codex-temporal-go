@@ -933,8 +933,9 @@ func (m *Model) handlePollResult(msg PollResultMsg) (tea.Model, tea.Cmd) {
 		return m, m.focusTextarea()
 	}
 
-	// Check if turn is complete
-	if m.isTurnComplete(result.Items) && result.Status.Phase == workflow.PhaseWaitingForInput {
+	// Check if turn is complete (only transition from Watching to avoid duplicates
+	// when a stale poll result arrives after we already transitioned to Input)
+	if m.isTurnComplete(result.Items) && result.Status.Phase == workflow.PhaseWaitingForInput && m.state == StateWatching {
 		m.stopPolling()
 
 		// Render status line

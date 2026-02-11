@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/glamour"
+	gansi "github.com/charmbracelet/glamour/ansi"
+	glamourstyles "github.com/charmbracelet/glamour/styles"
 	"github.com/mfateev/codex-temporal-go/internal/models"
 	"github.com/mfateev/codex-temporal-go/internal/workflow"
 	"golang.org/x/term"
@@ -39,7 +41,7 @@ func NewItemRenderer(width int, noColor, noMarkdown bool, styles Styles) *ItemRe
 			}
 		}
 		md, err := glamour.NewTermRenderer(
-			glamour.WithStandardStyle("dark"),
+			glamour.WithStyles(darkStyleCleanHeadings()),
 			glamour.WithWordWrap(w),
 		)
 		if err == nil {
@@ -405,6 +407,19 @@ func indent(s, prefix string) string {
 		lines[i] = prefix + lines[i]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// darkStyleCleanHeadings returns a copy of glamour's DarkStyleConfig with
+// heading prefixes (##, ###, etc.) removed so headings render as styled text
+// without raw markdown markers.
+func darkStyleCleanHeadings() gansi.StyleConfig {
+	s := glamourstyles.DarkStyleConfig
+	s.H2.Prefix = ""
+	s.H3.Prefix = ""
+	s.H4.Prefix = ""
+	s.H5.Prefix = ""
+	s.H6.Prefix = ""
+	return s
 }
 
 func formatTokens(n int) string {
