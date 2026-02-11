@@ -89,7 +89,7 @@ func TestItemRenderer_RenderTurnStarted(t *testing.T) {
 	}, false)
 
 	assert.NotEmpty(t, result)
-	assert.Contains(t, result, "turn-123")
+	assert.Contains(t, result, "──")
 }
 
 func TestItemRenderer_TurnCompleteNotRendered(t *testing.T) {

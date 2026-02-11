@@ -78,13 +78,16 @@ func (r *ItemRenderer) RenderItem(item models.ConversationItem, isResume bool) s
 
 // RenderTurnStarted renders a turn separator.
 func (r *ItemRenderer) RenderTurnStarted(item models.ConversationItem) string {
-	line := fmt.Sprintf("── Turn %s ──", item.TurnID)
-	return r.styles.TurnSeparator.Render(line) + "\n"
+	w := r.width
+	if w <= 0 {
+		w = 80
+	}
+	return r.styles.TurnSeparator.Render(strings.Repeat("─", w)) + "\n"
 }
 
-// RenderUserMessage renders a user message.
+// RenderUserMessage renders a user message (used only during resume).
 func (r *ItemRenderer) RenderUserMessage(item models.ConversationItem) string {
-	return r.styles.UserMessage.Render("> "+item.Content) + "\n"
+	return r.styles.UserMessage.Render("❯ "+item.Content) + "\n"
 }
 
 // RenderAssistantMessage renders an assistant message with optional markdown.

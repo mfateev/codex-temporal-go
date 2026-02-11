@@ -496,12 +496,6 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, sendShutdownCmd(m.client, m.workflowID)
 		}
 
-		// Render user message in viewport
-		m.appendToViewport(m.renderer.RenderUserMessage(models.ConversationItem{
-			Type:    models.ItemTypeUserMessage,
-			Content: line,
-		}))
-
 		m.state = StateWatching
 		m.spinnerMsg = "Thinking..."
 		m.textarea.Blur()
@@ -886,7 +880,7 @@ func (m *Model) handleWorkflowStarted(msg WorkflowStartedMsg) (tea.Model, tea.Cm
 	}
 
 	// New workflow
-	m.appendToViewport(fmt.Sprintf("Session: %s\n", m.workflowID))
+	m.appendToViewport(fmt.Sprintf("Started session %s\n", m.workflowID))
 	if m.config.Message != "" {
 		m.state = StateWatching
 		m.spinnerMsg = "Thinking..."

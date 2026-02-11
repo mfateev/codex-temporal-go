@@ -66,7 +66,7 @@ func TestModel_WorkflowStartedNewSession(t *testing.T) {
 	rm := result.(*Model)
 	assert.Equal(t, StateWatching, rm.state)
 	assert.Equal(t, "codex-abc123", rm.workflowID)
-	assert.Contains(t, rm.viewportContent, "Session: codex-abc123")
+	assert.Contains(t, rm.viewportContent, "Started session codex-abc123")
 }
 
 func TestModel_WorkflowStartedNewSessionNoMessage(t *testing.T) {
@@ -410,7 +410,7 @@ func TestModel_RenderNewItems(t *testing.T) {
 
 	m.renderNewItems(items)
 	assert.Equal(t, 1, m.lastRenderedSeq)
-	assert.Contains(t, m.viewportContent, "t1")
+	assert.Contains(t, m.viewportContent, "──")
 	assert.Contains(t, m.viewportContent, "Hello!")
 }
 
@@ -554,5 +554,4 @@ func TestModel_MultiLineInput(t *testing.T) {
 	rm := result.(*Model)
 	assert.Equal(t, StateWatching, rm.state)
 	assert.Empty(t, rm.textarea.Value(), "textarea should be cleared after submit")
-	assert.Contains(t, rm.viewportContent, "line 1")
 }
