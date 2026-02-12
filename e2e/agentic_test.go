@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,6 +105,11 @@ func TestMain(m *testing.M) {
 	// 6. Run tests
 	code := m.Run()
 
+	// 6b. Write E2E passed marker on success
+	if code == 0 {
+		writeE2EPassedMarker()
+	}
+
 	// 7. Tear down
 	log.Println("E2E: Tearing down...")
 	testWorker.Stop()
@@ -130,6 +136,31 @@ func findTemporalBin() string {
 		return p
 	}
 	return ""
+}
+
+// writeE2EPassedMarker writes the current HEAD SHA to <repo-root>/.e2e-passed
+// so that the e2e-test-gate hook can verify tests passed for this commit.
+func writeE2EPassedMarker() {
+	rootOut, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		log.Printf("E2E: Failed to find repo root for marker: %v", err)
+		return
+	}
+	root := strings.TrimSpace(string(rootOut))
+
+	shaOut, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		log.Printf("E2E: Failed to get HEAD SHA for marker: %v", err)
+		return
+	}
+	sha := strings.TrimSpace(string(shaOut))
+
+	markerPath := filepath.Join(root, ".e2e-passed")
+	if err := os.WriteFile(markerPath, []byte(sha+"\n"), 0644); err != nil {
+		log.Printf("E2E: Failed to write marker %s: %v", markerPath, err)
+		return
+	}
+	log.Printf("E2E: Wrote passed marker to %s (SHA: %s)", markerPath, sha)
 }
 
 // waitForPort polls a TCP port until it accepts connections or the timeout expires.
