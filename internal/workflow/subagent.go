@@ -14,6 +14,7 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/mfateev/codex-temporal-go/internal/instructions"
 	"github.com/mfateev/codex-temporal-go/internal/models"
 )
 
@@ -51,6 +52,7 @@ const (
 	AgentRoleOrchestrator AgentRole = "orchestrator"
 	AgentRoleWorker       AgentRole = "worker"
 	AgentRoleExplorer     AgentRole = "explorer"
+	AgentRolePlanner      AgentRole = "planner"
 )
 
 // parseAgentRole converts a string to AgentRole, defaulting to AgentRoleDefault.
@@ -62,6 +64,8 @@ func parseAgentRole(s string) AgentRole {
 		return AgentRoleWorker
 	case "explorer":
 		return AgentRoleExplorer
+	case "planner":
+		return AgentRolePlanner
 	default:
 		return AgentRoleDefault
 	}
@@ -536,6 +540,15 @@ func applyRoleOverrides(cfg *models.SessionConfiguration, role AgentRole) {
 		cfg.Tools.EnableWriteFile = false
 		cfg.Tools.EnableApplyPatch = false
 		// Keep read tools: shell (for read commands), read_file, list_dir, grep_files
+	case AgentRolePlanner:
+		// Planner: read-only tools, no collab, custom base instructions.
+		// The planner explores the codebase and produces a plan without modifications.
+		cfg.Tools.EnableWriteFile = false
+		cfg.Tools.EnableApplyPatch = false
+		cfg.Tools.EnableCollab = false
+		cfg.Tools.EnableShell = true
+		// Replace base instructions with planner-specific prompt
+		cfg.BaseInstructions = instructions.PlannerBaseInstructions
 	case AgentRoleOrchestrator:
 		// Orchestrator: coordination focus, no write tools
 		cfg.Tools.EnableWriteFile = false

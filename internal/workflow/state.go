@@ -54,6 +54,10 @@ const (
 	// SignalAgentShutdown requests a child agent workflow to shut down.
 	// Maps to: codex-rs/core/src/agent/control.rs agent shutdown signal
 	SignalAgentShutdown = "agent_shutdown"
+
+	// UpdatePlanRequest spawns a planner child workflow directly (no LLM round-trip).
+	// The CLI sends this when the user types /plan <message>.
+	UpdatePlanRequest = "plan_request"
 )
 
 // TurnPhase indicates the current phase of the workflow turn.
@@ -78,6 +82,7 @@ type TurnStatus struct {
 	PendingApprovals        []PendingApproval        `json:"pending_approvals,omitempty"`
 	PendingEscalations      []EscalationRequest      `json:"pending_escalations,omitempty"`
 	PendingUserInputRequest *PendingUserInputRequest `json:"pending_user_input_request,omitempty"`
+	ChildAgents             []ChildAgentSummary      `json:"child_agents,omitempty"`
 	IterationCount          int                      `json:"iteration_count"`
 	TotalTokens             int                      `json:"total_tokens"`
 	TurnCount               int                      `json:"turn_count"`
@@ -210,6 +215,28 @@ type CompactRequest struct{}
 // CompactResponse is returned by the compact Update.
 type CompactResponse struct {
 	Acknowledged bool `json:"acknowledged"`
+}
+
+// PlanRequest is the payload for the plan_request Update.
+// Sent by the CLI when the user types /plan <message>.
+type PlanRequest struct {
+	Message string `json:"message"`
+}
+
+// PlanRequestAccepted is returned by the plan_request Update after the planner
+// child workflow has been started. Contains the child's workflow ID so the CLI
+// can communicate with it directly.
+type PlanRequestAccepted struct {
+	AgentID    string `json:"agent_id"`
+	WorkflowID string `json:"workflow_id"`
+}
+
+// ChildAgentSummary is a lightweight view of a child agent for the get_turn_status query.
+type ChildAgentSummary struct {
+	AgentID    string      `json:"agent_id"`
+	WorkflowID string     `json:"workflow_id"`
+	Role       AgentRole   `json:"role"`
+	Status     AgentStatus `json:"status"`
 }
 
 // AgentInputSignal is the payload for the agent_input signal.

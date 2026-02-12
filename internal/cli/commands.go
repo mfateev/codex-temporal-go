@@ -259,6 +259,63 @@ func sendCompactCmd(c client.Client, workflowID string) tea.Cmd {
 	}
 }
 
+// sendPlanRequestCmd sends a plan_request Update to the parent workflow, which
+// spawns a planner child workflow and returns its workflow ID.
+func sendPlanRequestCmd(c client.Client, workflowID, message string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID:   workflowID,
+			UpdateName:   workflow.UpdatePlanRequest,
+			Args:         []interface{}{workflow.PlanRequest{Message: message}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return PlanRequestErrorMsg{Err: err}
+		}
+
+		var accepted workflow.PlanRequestAccepted
+		if err := updateHandle.Get(ctx, &accepted); err != nil {
+			return PlanRequestErrorMsg{Err: err}
+		}
+
+		return PlanRequestAcceptedMsg{
+			AgentID:    accepted.AgentID,
+			WorkflowID: accepted.WorkflowID,
+		}
+	}
+}
+
+// queryChildConversationItems queries a child workflow's conversation items
+// and extracts the last assistant message (the plan text).
+func queryChildConversationItems(c client.Client, childWorkflowID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		resp, err := c.QueryWorkflow(ctx, childWorkflowID, "", workflow.QueryGetConversationItems)
+		if err != nil {
+			return PlannerCompletedMsg{PlanText: ""}
+		}
+
+		var items []models.ConversationItem
+		if err := resp.Get(&items); err != nil {
+			return PlannerCompletedMsg{PlanText: ""}
+		}
+
+		// Extract the last assistant message as the plan
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].Type == models.ItemTypeAssistantMessage && items[i].Content != "" {
+				return PlannerCompletedMsg{PlanText: items[i].Content}
+			}
+		}
+
+		return PlannerCompletedMsg{PlanText: ""}
+	}
+}
+
 // waitForCompletionCmd waits for a workflow to complete after shutdown.
 func waitForCompletionCmd(c client.Client, workflowID string) tea.Cmd {
 	return func() tea.Msg {

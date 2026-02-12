@@ -24,6 +24,7 @@ func TestParseAgentRole(t *testing.T) {
 		{"orchestrator", AgentRoleOrchestrator},
 		{"worker", AgentRoleWorker},
 		{"explorer", AgentRoleExplorer},
+		{"planner", AgentRolePlanner},
 		{"", AgentRoleDefault},
 		{"unknown", AgentRoleDefault},
 	}
@@ -243,6 +244,34 @@ func TestApplyRoleOverrides(t *testing.T) {
 		assert.True(t, cfg.Tools.EnableWriteFile)
 		assert.True(t, cfg.Tools.EnableApplyPatch)
 	})
+
+	t.Run("planner: read-only, no collab, custom instructions", func(t *testing.T) {
+		cfg := models.SessionConfiguration{
+			Model: models.ModelConfig{Model: "gpt-4o"},
+			Tools: models.ToolsConfig{
+				EnableShell:      true,
+				EnableReadFile:   true,
+				EnableWriteFile:  true,
+				EnableApplyPatch: true,
+				EnableListDir:    true,
+				EnableGrepFiles:  true,
+				EnableCollab:     true,
+			},
+			BaseInstructions: "original instructions",
+		}
+		applyRoleOverrides(&cfg, AgentRolePlanner)
+		assert.False(t, cfg.Tools.EnableWriteFile, "planner should not write")
+		assert.False(t, cfg.Tools.EnableApplyPatch, "planner should not patch")
+		assert.False(t, cfg.Tools.EnableCollab, "planner should not spawn children")
+		assert.True(t, cfg.Tools.EnableShell, "planner keeps shell for read commands")
+		assert.True(t, cfg.Tools.EnableReadFile, "planner keeps read_file")
+		assert.True(t, cfg.Tools.EnableListDir, "planner keeps list_dir")
+		assert.True(t, cfg.Tools.EnableGrepFiles, "planner keeps grep_files")
+		assert.NotEqual(t, "original instructions", cfg.BaseInstructions,
+			"planner should have custom base instructions")
+		assert.Contains(t, cfg.BaseInstructions, "planning agent",
+			"planner instructions should mention planning")
+	})
 }
 
 func TestBuildToolSpecs_WithCollabTools(t *testing.T) {
@@ -393,6 +422,19 @@ func TestBuildAgentSpawnConfig(t *testing.T) {
 		assert.False(t, input.Config.Tools.EnableWriteFile)
 		assert.False(t, input.Config.Tools.EnableApplyPatch)
 		assert.False(t, input.Config.Tools.EnableShell)
+	})
+
+	t.Run("planner role", func(t *testing.T) {
+		input := buildAgentSpawnConfig(parentConfig, AgentRolePlanner, "plan the feature", 1)
+		assert.Equal(t, "plan the feature", input.UserMessage)
+		assert.Equal(t, 1, input.Depth)
+		assert.False(t, input.Config.Tools.EnableWriteFile, "planner should not write")
+		assert.False(t, input.Config.Tools.EnableApplyPatch, "planner should not patch")
+		assert.False(t, input.Config.Tools.EnableCollab, "planner at depth 1 has collab disabled (both depth and role)")
+		assert.True(t, input.Config.Tools.EnableShell, "planner keeps shell for read commands")
+		assert.True(t, input.Config.Tools.EnableReadFile, "planner keeps read_file")
+		assert.Contains(t, input.Config.BaseInstructions, "planning agent",
+			"planner should have custom base instructions")
 	})
 }
 

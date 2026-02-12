@@ -90,3 +90,21 @@ type CompactSentMsg struct{}
 type CompactErrorMsg struct {
 	Err error
 }
+
+// PlanRequestAcceptedMsg is sent when the plan_request Update is accepted and
+// the planner child workflow has started.
+type PlanRequestAcceptedMsg struct {
+	AgentID    string
+	WorkflowID string
+}
+
+// PlanRequestErrorMsg is sent when the plan_request Update fails.
+type PlanRequestErrorMsg struct {
+	Err error
+}
+
+// PlannerCompletedMsg is sent when the planner child workflow completes and
+// its plan text has been extracted.
+type PlannerCompletedMsg struct {
+	PlanText string
+}

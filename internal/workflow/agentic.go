@@ -125,7 +125,7 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	// Returns current turn phase and stats for CLI polling.
 	err = workflow.SetQueryHandler(ctx, QueryGetTurnStatus, func() (TurnStatus, error) {
 		turnCount, _ := s.History.GetTurnCount()
-		return TurnStatus{
+		status := TurnStatus{
 			Phase:                   s.Phase,
 			CurrentTurnID:           s.CurrentTurnID,
 			ToolsInFlight:           s.ToolsInFlight,
@@ -136,7 +136,19 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 			TotalTokens:             s.TotalTokens,
 			TurnCount:               turnCount,
 			WorkerVersion:           version.GitCommit,
-		}, nil
+		}
+		// Populate child agent summaries from AgentControl
+		if s.AgentCtl != nil {
+			for _, info := range s.AgentCtl.Agents {
+				status.ChildAgents = append(status.ChildAgents, ChildAgentSummary{
+					AgentID:    info.AgentID,
+					WorkflowID: info.WorkflowID,
+					Role:       info.Role,
+					Status:     info.Status,
+				})
+			}
+		}
+		return status, nil
 	})
 	if err != nil {
 		logger.Error("Failed to register get_turn_status query handler", "error", err)
@@ -341,6 +353,79 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	)
 	if err != nil {
 		logger.Error("Failed to register user_input_question_response update handler", "error", err)
+	}
+
+	// Update: plan_request
+	// Spawns a planner child workflow directly (no LLM round-trip) and returns
+	// its workflow ID so the CLI can communicate with it.
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdatePlanRequest,
+		func(ctx workflow.Context, req PlanRequest) (PlanRequestAccepted, error) {
+			childDepth := s.AgentCtl.ParentDepth + 1
+			if childDepth > MaxThreadSpawnDepth {
+				return PlanRequestAccepted{}, fmt.Errorf("cannot spawn planner: maximum nesting depth (%d) exceeded", MaxThreadSpawnDepth)
+			}
+
+			agentID := nextAgentID(ctx)
+
+			// Build planner child workflow input
+			childInput := buildAgentSpawnConfig(s.Config, AgentRolePlanner, req.Message, childDepth)
+
+			// Register agent info
+			info := &AgentInfo{
+				AgentID:     agentID,
+				Role:        AgentRolePlanner,
+				Status:      AgentStatusPendingInit,
+				TaskMessage: req.Message,
+			}
+			s.AgentCtl.Agents[agentID] = info
+
+			// Start child workflow
+			childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+				WorkflowID: s.ConversationID + "/" + agentID,
+			})
+
+			future := workflow.ExecuteChildWorkflow(childCtx, "AgenticWorkflow", childInput)
+
+			// Get the child workflow execution info
+			var childExec workflow.Execution
+			if err := future.GetChildWorkflowExecution().Get(ctx, &childExec); err != nil {
+				info.Status = AgentStatusErrored
+				return PlanRequestAccepted{}, fmt.Errorf("failed to start planner workflow: %w", err)
+			}
+
+			info.WorkflowID = childExec.ID
+			info.RunID = childExec.RunID
+			info.Status = AgentStatusRunning
+
+			// Store future and start watcher
+			s.AgentCtl.childFutures[agentID] = future
+			s.startChildCompletionWatcher(ctx, agentID, future)
+
+			logger.Info("Spawned planner agent",
+				"agent_id", agentID,
+				"child_workflow_id", childExec.ID)
+
+			return PlanRequestAccepted{
+				AgentID:    agentID,
+				WorkflowID: childExec.ID,
+			}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, req PlanRequest) error {
+				if req.Message == "" {
+					return fmt.Errorf("message must not be empty")
+				}
+				if s.ShutdownRequested {
+					return fmt.Errorf("session is shutting down")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register plan_request update handler", "error", err)
 	}
 
 	// Signal channels for child workflow mode (subagent).

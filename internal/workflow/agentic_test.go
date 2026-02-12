@@ -2842,5 +2842,106 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_FinalMessageInResult() {
 	assert.Equal(s.T(), "This is my final answer.", result.FinalMessage)
 }
 
+// TestMultiTurn_PlanRequest verifies that the plan_request Update spawns a planner
+// child workflow and returns the child's workflow ID. Also verifies that
+// get_turn_status includes the child agent in ChildAgents.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_PlanRequest() {
+	// Parent LLM call (initial turn)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello! How can I help?", 30), nil).Once()
+
+	// Planner child will also call LLM
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Here is my implementation plan.", 20), nil).Once()
+
+	// Send plan_request after initial turn completes
+	s.env.RegisterDelayedCallback(func() {
+		cb := &testsuite.TestUpdateCallback{
+			OnAccept: func() {},
+			OnReject: func(err error) {
+				s.T().Fatalf("plan_request rejected: %v", err)
+			},
+			OnComplete: func(result interface{}, err error) {
+				require.NoError(s.T(), err)
+				// The test env may return the value or a pointer
+				switch v := result.(type) {
+				case *PlanRequestAccepted:
+					assert.NotEmpty(s.T(), v.AgentID, "agent ID should be set")
+					assert.NotEmpty(s.T(), v.WorkflowID, "workflow ID should be set")
+				case PlanRequestAccepted:
+					assert.NotEmpty(s.T(), v.AgentID, "agent ID should be set")
+					assert.NotEmpty(s.T(), v.WorkflowID, "workflow ID should be set")
+				default:
+					s.T().Fatalf("unexpected result type: %T", result)
+				}
+			},
+		}
+		s.env.UpdateWorkflow(UpdatePlanRequest, "plan-1", cb,
+			PlanRequest{Message: "Explore the codebase and plan the feature"})
+	}, time.Second*2)
+
+	// Query turn status after plan_request to verify ChildAgents
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+
+		// Should have at least one child agent (the planner)
+		assert.NotEmpty(s.T(), status.ChildAgents, "should have child agents")
+		if len(status.ChildAgents) > 0 {
+			found := false
+			for _, child := range status.ChildAgents {
+				if child.Role == AgentRolePlanner {
+					found = true
+					assert.NotEmpty(s.T(), child.AgentID)
+					assert.NotEmpty(s.T(), child.WorkflowID)
+				}
+			}
+			assert.True(s.T(), found, "should have a planner child agent")
+		}
+	}, time.Second*3)
+
+	s.sendShutdown(time.Second * 5)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+}
+
+// TestMultiTurn_PlanRequest_ValidatorRejectsEmpty verifies that plan_request
+// rejects empty messages.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_PlanRequest_ValidatorRejectsEmpty() {
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 30), nil).Once()
+
+	rejected := false
+	s.env.RegisterDelayedCallback(func() {
+		cb := &testsuite.TestUpdateCallback{
+			OnAccept: func() {
+				s.T().Fatal("plan_request should have been rejected")
+			},
+			OnReject: func(err error) {
+				rejected = true
+				assert.Contains(s.T(), err.Error(), "message must not be empty")
+			},
+			OnComplete: func(interface{}, error) {},
+		}
+		s.env.UpdateWorkflow(UpdatePlanRequest, "plan-empty", cb,
+			PlanRequest{Message: ""})
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 3)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	assert.True(s.T(), rejected, "empty plan_request should have been rejected")
+}
+
 // Ensure we reference workflow.Context (suppress unused import warning)
 var _ workflow.Context

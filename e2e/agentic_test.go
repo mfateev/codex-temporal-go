@@ -1179,6 +1179,125 @@ func TestAgenticWorkflow_SpawnAndWait(t *testing.T) {
 		result.TotalTokens, hasSpawnCall, hasWaitCall)
 }
 
+// TestAgenticWorkflow_PlanMode tests the plan_request Update:
+// 1. Start a parent workflow
+// 2. Send plan_request Update to spawn a planner child
+// 3. Interact with the planner child directly via user_input and get_conversation_items
+// 4. Shutdown the planner child
+// 5. Verify the plan text flows back from the child
+func TestAgenticWorkflow_PlanMode(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-plan-mode-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage:    "Say hello and wait for further instructions.",
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Model:         CheapModel,
+				Temperature:   0,
+				MaxTokens:     500,
+				ContextWindow: 128000,
+			},
+			Tools: models.ToolsConfig{
+				EnableShell:    true,
+				EnableReadFile: true,
+				EnableCollab:   true,
+			},
+		},
+	}
+
+	t.Logf("Starting plan mode test workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	// 1. Start parent workflow and wait for initial turn
+	startWorkflow(t, ctx, c, input)
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+	t.Log("Parent initial turn complete")
+
+	// 2. Send plan_request to spawn planner child
+	updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   workflowID,
+		UpdateName:   workflow.UpdatePlanRequest,
+		Args:         []interface{}{workflow.PlanRequest{Message: "What is 2+2? Answer with just the number."}},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	require.NoError(t, err, "Failed to send plan_request")
+
+	var accepted workflow.PlanRequestAccepted
+	require.NoError(t, updateHandle.Get(ctx, &accepted))
+	assert.NotEmpty(t, accepted.AgentID, "agent ID should be set")
+	assert.NotEmpty(t, accepted.WorkflowID, "workflow ID should be set")
+	t.Logf("Planner child spawned: agent_id=%s, workflow_id=%s", accepted.AgentID, accepted.WorkflowID)
+
+	// 3. Wait for planner child to complete its turn
+	childWfID := accepted.WorkflowID
+	waitForTurnComplete(t, ctx, c, childWfID, 1)
+	t.Log("Planner child turn complete")
+
+	// 4. Query planner child's conversation items directly
+	resp, err := c.QueryWorkflow(ctx, childWfID, "", workflow.QueryGetConversationItems)
+	require.NoError(t, err)
+	var childItems []models.ConversationItem
+	require.NoError(t, resp.Get(&childItems))
+	t.Logf("Planner child has %d conversation items", len(childItems))
+
+	// Verify planner has assistant response
+	hasAssistant := false
+	for _, item := range childItems {
+		if item.Type == models.ItemTypeAssistantMessage && item.Content != "" {
+			t.Logf("Planner response: %s", truncateStr(item.Content, 200))
+			hasAssistant = true
+		}
+	}
+	assert.True(t, hasAssistant, "Planner should have an assistant response")
+
+	// 5. Verify parent's turn_status shows the planner child
+	statusResp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetTurnStatus)
+	require.NoError(t, err)
+	var status workflow.TurnStatus
+	require.NoError(t, statusResp.Get(&status))
+	assert.NotEmpty(t, status.ChildAgents, "Parent should report child agents")
+	if len(status.ChildAgents) > 0 {
+		found := false
+		for _, child := range status.ChildAgents {
+			if child.Role == workflow.AgentRolePlanner {
+				found = true
+				t.Logf("Parent sees planner child: agent_id=%s, status=%s", child.AgentID, child.Status)
+			}
+		}
+		assert.True(t, found, "Parent should have a planner child")
+	}
+
+	// 6. Shutdown planner child directly
+	childShutdownHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   childWfID,
+		UpdateName:   workflow.UpdateShutdown,
+		Args:         []interface{}{workflow.ShutdownRequest{}},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	require.NoError(t, err, "Failed to shutdown planner child")
+	var childShutdownResp workflow.ShutdownResponse
+	require.NoError(t, childShutdownHandle.Get(ctx, &childShutdownResp))
+	assert.True(t, childShutdownResp.Acknowledged)
+	t.Log("Planner child shutdown acknowledged")
+
+	// Wait for planner child workflow to complete
+	childRun := c.GetWorkflow(ctx, childWfID, "")
+	var childResult workflow.WorkflowResult
+	require.NoError(t, childRun.Get(ctx, &childResult), "Planner child should complete")
+	assert.Equal(t, "shutdown", childResult.EndReason)
+	assert.NotEmpty(t, childResult.FinalMessage, "Planner should have a final message")
+	t.Logf("Planner final message: %s", truncateStr(childResult.FinalMessage, 200))
+
+	// 7. Shutdown parent
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+	assert.Equal(t, "shutdown", result.EndReason)
+	t.Logf("Plan mode test complete. Parent tokens: %d", result.TotalTokens)
+}
+
 // truncateStr truncates a string to n characters with "..." appended.
 func truncateStr(s string, n int) string {
 	if len(s) <= n {

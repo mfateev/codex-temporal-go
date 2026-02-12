@@ -114,6 +114,11 @@ type Model struct {
 	// Selector (replaces textarea for approval/escalation/user-input states)
 	selector *SelectorModel
 
+	// Plan mode state
+	parentWorkflowID string // saved parent ID while attached to planner
+	plannerAgentID   string // agent ID of the planner child
+	plannerActive    bool   // whether TUI is attached to the planner child
+
 	// Paste buffering: multi-line pastes show "[N lines pasted]" placeholder
 	pastedContent string
 	pasteLabel    string
@@ -240,6 +245,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendToViewport(fmt.Sprintf("Error sending interrupt: %v\n", msg.Err))
 
 	case ShutdownSentMsg:
+		if m.plannerActive {
+			// In plan mode: shutdown was sent to the planner child.
+			// Wait for it to complete, then extract the plan.
+			m.spinnerMsg = "Planner shutting down..."
+			return &m, waitForCompletionCmd(m.client, m.workflowID)
+		}
 		m.quitting = true
 		return &m, waitForCompletionCmd(m.client, m.workflowID)
 
@@ -287,7 +298,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case UserInputQuestionErrorMsg:
 		m.appendToViewport(fmt.Sprintf("Error sending user input response: %v\n", msg.Err))
 
+	case PlanRequestAcceptedMsg:
+		return m.handlePlanRequestAccepted(msg)
+
+	case PlanRequestErrorMsg:
+		m.appendToViewport(fmt.Sprintf("Error starting plan mode: %v\n", msg.Err))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case PlannerCompletedMsg:
+		return m.handlePlannerCompleted(msg)
+
 	case SessionCompletedMsg:
+		if m.plannerActive {
+			// Planner child completed — extract plan and return to parent
+			m.stopPolling()
+			childWfID := m.workflowID
+			return &m, queryChildConversationItems(m.client, childWfID)
+		}
 		m.stopPolling()
 		if msg.Result != nil {
 			m.appendToViewport(fmt.Sprintf("Session ended. Tokens: %d, Tools: %d\n",
@@ -299,6 +327,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return &m, tea.Quit
 
 	case SessionErrorMsg:
+		if m.plannerActive {
+			// Planner child errored or completed while polling — extract plan
+			m.stopPolling()
+			childWfID := m.workflowID
+			return &m, queryChildConversationItems(m.client, childWfID)
+		}
 		m.appendToViewport("Session closed.\n")
 		m.quitting = true
 		return &m, tea.Quit
@@ -364,21 +398,32 @@ func (m Model) renderStatusBar() string {
 	turn := fmt.Sprintf("turn %d", m.turnCount)
 
 	var stateLabel string
-	switch m.state {
-	case StateInput:
-		stateLabel = "ready"
-	case StateWatching:
-		stateLabel = "working"
-	case StateApproval:
-		stateLabel = "approval"
-	case StateEscalation:
-		stateLabel = "escalation"
-	case StateUserInputQuestion:
-		stateLabel = "question"
-	case StateStartup:
-		stateLabel = "connecting"
-	default:
-		stateLabel = ""
+	if m.plannerActive {
+		switch m.state {
+		case StateInput:
+			stateLabel = "plan mode"
+		case StateWatching:
+			stateLabel = "planning"
+		default:
+			stateLabel = "plan mode"
+		}
+	} else {
+		switch m.state {
+		case StateInput:
+			stateLabel = "ready"
+		case StateWatching:
+			stateLabel = "working"
+		case StateApproval:
+			stateLabel = "approval"
+		case StateEscalation:
+			stateLabel = "escalation"
+		case StateUserInputQuestion:
+			stateLabel = "question"
+		case StateStartup:
+			stateLabel = "connecting"
+		default:
+			stateLabel = ""
+		}
 	}
 
 	wv := m.workerVersion
@@ -519,6 +564,37 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StateWatching
 			m.textarea.Blur()
 			return m, sendCompactCmd(m.client, m.workflowID)
+		}
+		if strings.HasPrefix(line, "/plan") {
+			if m.workflowID == "" {
+				m.appendToViewport("No active session. Start a session first.\n")
+				return m, nil
+			}
+			if m.plannerActive {
+				m.appendToViewport("Already in plan mode. Use /done to finish.\n")
+				return m, nil
+			}
+			planMsg := strings.TrimSpace(strings.TrimPrefix(line, "/plan"))
+			if planMsg == "" {
+				m.appendToViewport("Usage: /plan <message>\n")
+				return m, nil
+			}
+			m.appendToViewport(m.renderer.RenderSystemMessage("Starting plan mode..."))
+			m.spinnerMsg = "Starting planner..."
+			m.state = StateWatching
+			m.textarea.Blur()
+			return m, sendPlanRequestCmd(m.client, m.workflowID, planMsg)
+		}
+		if line == "/done" {
+			if !m.plannerActive {
+				m.appendToViewport("Not in plan mode. Use /plan <message> to start.\n")
+				return m, nil
+			}
+			m.appendToViewport(m.renderer.RenderSystemMessage("Ending plan mode..."))
+			m.spinnerMsg = "Shutting down planner..."
+			m.state = StateWatching
+			m.textarea.Blur()
+			return m, sendShutdownCmd(m.client, m.workflowID)
 		}
 
 		// Show user message in viewport (❯ prefix, no separators)
@@ -789,7 +865,14 @@ func (m *Model) handleCtrlC() (tea.Model, tea.Cmd) {
 
 	switch m.state {
 	case StateWatching:
-		if now.Sub(m.lastInterruptTime) < 2*time.Second {
+		if m.plannerActive && now.Sub(m.lastInterruptTime) < 2*time.Second {
+			// Second Ctrl+C in plan mode within 2s — detach from planner
+			m.appendToViewport("\nDetaching from planner...\n")
+			m.lastInterruptTime = now
+			m.spinnerMsg = "Shutting down planner..."
+			return m, sendShutdownCmd(m.client, m.workflowID)
+		}
+		if !m.plannerActive && now.Sub(m.lastInterruptTime) < 2*time.Second {
 			// Second Ctrl+C within 2s — disconnect
 			m.stopPolling()
 			m.quitting = true
@@ -797,7 +880,11 @@ func (m *Model) handleCtrlC() (tea.Model, tea.Cmd) {
 		}
 		// First Ctrl+C — interrupt
 		m.lastInterruptTime = now
-		m.appendToViewport("\nInterrupting... (Ctrl+C again to disconnect)\n")
+		if m.plannerActive {
+			m.appendToViewport("\nInterrupting planner... (Ctrl+C again to detach)\n")
+		} else {
+			m.appendToViewport("\nInterrupting... (Ctrl+C again to disconnect)\n")
+		}
 		return m, sendInterruptCmd(m.client, m.workflowID)
 
 	case StateApproval:
@@ -927,6 +1014,12 @@ func (m *Model) handlePollResult(msg PollResultMsg) (tea.Model, tea.Cmd) {
 	if result.Err != nil {
 		switch classifyPollError(result.Err) {
 		case pollErrorCompleted:
+			if m.plannerActive {
+				// Planner child completed — extract plan and return to parent
+				m.stopPolling()
+				childWfID := m.workflowID
+				return m, queryChildConversationItems(m.client, childWfID)
+			}
 			m.stopPolling()
 			m.appendToViewport("Session ended.\n")
 			m.quitting = true
@@ -1039,6 +1132,46 @@ func (m *Model) isTurnComplete(items []models.ConversationItem) bool {
 		}
 	}
 	return false
+}
+
+func (m *Model) handlePlanRequestAccepted(msg PlanRequestAcceptedMsg) (tea.Model, tea.Cmd) {
+	// Save parent workflow ID and switch to planner child
+	m.parentWorkflowID = m.workflowID
+	m.plannerAgentID = msg.AgentID
+	m.plannerActive = true
+
+	// Switch to the planner child's workflow ID
+	m.workflowID = msg.WorkflowID
+	m.lastRenderedSeq = -1
+
+	m.appendToViewport(m.renderer.RenderSystemMessage(
+		fmt.Sprintf("Plan mode active (agent: %s). Use /done to finish.", msg.AgentID)))
+
+	m.state = StateWatching
+	m.spinnerMsg = "Planning..."
+	return m, m.startPolling()
+}
+
+func (m *Model) handlePlannerCompleted(msg PlannerCompletedMsg) (tea.Model, tea.Cmd) {
+	// Switch back to parent workflow
+	m.workflowID = m.parentWorkflowID
+	m.parentWorkflowID = ""
+	m.plannerAgentID = ""
+	m.plannerActive = false
+	m.lastRenderedSeq = -1
+
+	if msg.PlanText != "" {
+		m.appendToViewport(m.renderer.RenderSystemMessage("Plan mode ended. Sending plan to parent..."))
+		// Send the plan as user input to the parent workflow
+		planInput := "Implement the following plan:\n\n" + msg.PlanText
+		m.state = StateWatching
+		m.spinnerMsg = "Thinking..."
+		return m, sendUserInputCmd(m.client, m.workflowID, planInput)
+	}
+
+	m.appendToViewport(m.renderer.RenderSystemMessage("Plan mode ended (no plan produced)."))
+	m.state = StateInput
+	return m, m.focusTextarea()
 }
 
 func (m *Model) appendToViewport(content string) {
