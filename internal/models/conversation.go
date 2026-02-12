@@ -13,6 +13,7 @@ const (
 	ItemTypeAssistantMessage   ConversationItemType = "assistant_message"    // Codex: ResponseItem::AssistantMessage
 	ItemTypeFunctionCall       ConversationItemType = "function_call"        // Codex: ResponseItem::FunctionCall
 	ItemTypeFunctionCallOutput ConversationItemType = "function_call_output" // Codex: ResponseItem::FunctionCallOutput
+	ItemTypeCompaction         ConversationItemType = "compaction"            // Codex: ResponseItem::Compaction
 
 	// Turn lifecycle markers (maps to Codex EventMsg::TurnStarted / EventMsg::TurnComplete)
 	ItemTypeTurnStarted  ConversationItemType = "turn_started"  // Codex: EventMsg::TurnStarted

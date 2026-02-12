@@ -113,3 +113,70 @@ func TestDropOldestUserTurns_PreservesContent(t *testing.T) {
 	assert.Equal(t, "second", items[1].Content) // user message from turn 2
 	assert.Equal(t, "reply2", items[2].Content)
 }
+
+// --- ReplaceAll tests ---
+
+func TestReplaceAll_ReplacesItems(t *testing.T) {
+	h := buildHistory(3) // 12 items
+
+	newItems := []models.ConversationItem{
+		{Type: models.ItemTypeCompaction, Content: "compacted"},
+		{Type: models.ItemTypeAssistantMessage, Content: "summary"},
+		{Type: models.ItemTypeUserMessage, Content: "recent msg"},
+	}
+
+	err := h.ReplaceAll(newItems)
+	require.NoError(t, err)
+
+	items, _ := h.GetRawItems()
+	assert.Len(t, items, 3)
+	assert.Equal(t, models.ItemTypeCompaction, items[0].Type)
+	assert.Equal(t, "compacted", items[0].Content)
+	assert.Equal(t, "summary", items[1].Content)
+	assert.Equal(t, "recent msg", items[2].Content)
+}
+
+func TestReplaceAll_ReassignsSeq(t *testing.T) {
+	h := buildHistory(2) // 8 items
+
+	newItems := []models.ConversationItem{
+		{Type: models.ItemTypeCompaction, Content: "c", Seq: 99},
+		{Type: models.ItemTypeAssistantMessage, Content: "s", Seq: 100},
+	}
+
+	err := h.ReplaceAll(newItems)
+	require.NoError(t, err)
+
+	items, _ := h.GetRawItems()
+	assert.Len(t, items, 2)
+	assert.Equal(t, 0, items[0].Seq, "first item should have Seq=0")
+	assert.Equal(t, 1, items[1].Seq, "second item should have Seq=1")
+}
+
+func TestReplaceAll_EmptyInput(t *testing.T) {
+	h := buildHistory(2)
+
+	err := h.ReplaceAll(nil)
+	require.NoError(t, err)
+
+	items, _ := h.GetRawItems()
+	assert.Len(t, items, 0)
+}
+
+func TestReplaceAll_DoesNotMutateInput(t *testing.T) {
+	h := NewInMemoryHistory()
+
+	input := []models.ConversationItem{
+		{Type: models.ItemTypeUserMessage, Content: "msg", Seq: 42},
+	}
+
+	err := h.ReplaceAll(input)
+	require.NoError(t, err)
+
+	// Original input should not be modified
+	assert.Equal(t, 42, input[0].Seq, "input should not be mutated")
+
+	// History should have re-assigned Seq
+	items, _ := h.GetRawItems()
+	assert.Equal(t, 0, items[0].Seq)
+}

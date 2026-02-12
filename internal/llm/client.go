@@ -43,11 +43,30 @@ type LLMResponse struct {
 	ResponseID string `json:"response_id,omitempty"`
 }
 
+// CompactRequest represents a request to compact conversation history.
+//
+// Maps to: codex-rs/core/src/compact.rs CompactRequest
+type CompactRequest struct {
+	Model        string                      `json:"model"`
+	Input        []models.ConversationItem   `json:"input"`
+	Instructions string                      `json:"instructions,omitempty"`
+}
+
+// CompactResponse represents the result of a compaction operation.
+// Items contains the compacted history to use as input for the next call.
+//
+// Maps to: codex-rs/core/src/compact.rs CompactResponse
+type CompactResponse struct {
+	Items      []models.ConversationItem `json:"items"`
+	TokenUsage models.TokenUsage         `json:"token_usage"`
+}
+
 // LLMClient is the interface for LLM providers.
 //
 // Maps to: codex-rs/core/src/client.rs ModelClient trait
 type LLMClient interface {
 	Call(ctx context.Context, request LLMRequest) (LLMResponse, error)
+	Compact(ctx context.Context, request CompactRequest) (CompactResponse, error)
 }
 
 // classifyByStatusCode maps an HTTP status code to the appropriate ActivityError.

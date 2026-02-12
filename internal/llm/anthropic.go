@@ -395,6 +395,152 @@ func (c *AnthropicClient) parseResponse(response *anthropic.Message) ([]models.C
 	return items, finishReason
 }
 
+// Compact performs local compaction via LLM summarization.
+// Sends the current history with a compaction prompt, extracts the summary,
+// and rebuilds history with summary + recent user messages.
+//
+// Maps to: codex-rs/core/src/compact.rs local compaction path
+func (c *AnthropicClient) Compact(ctx context.Context, request CompactRequest) (CompactResponse, error) {
+	// Build a summarization request with the compaction prompt appended
+	historyWithPrompt := make([]models.ConversationItem, len(request.Input))
+	copy(historyWithPrompt, request.Input)
+	historyWithPrompt = append(historyWithPrompt, models.ConversationItem{
+		Type:    models.ItemTypeUserMessage,
+		Content: compactionPrompt,
+	})
+
+	llmRequest := LLMRequest{
+		History: historyWithPrompt,
+		ModelConfig: models.ModelConfig{
+			Provider:      "anthropic",
+			Model:         request.Model,
+			MaxTokens:     4096,
+			ContextWindow: 128000,
+		},
+		BaseInstructions: request.Instructions,
+	}
+
+	resp, err := c.Call(ctx, llmRequest)
+	if err != nil {
+		return CompactResponse{}, fmt.Errorf("compaction LLM call failed: %w", err)
+	}
+
+	// Extract the summary from the last assistant message
+	summary := extractLastAssistantMessage(resp.Items)
+	if summary == "" {
+		return CompactResponse{}, fmt.Errorf("compaction produced empty summary")
+	}
+
+	// Collect recent user messages within a 20k token budget
+	recentItems := collectRecentUserMessages(request.Input, 20_000)
+
+	// Build compacted history: compaction marker + summary + recent items
+	compactedItems := buildCompactedHistory(summary, recentItems)
+
+	return CompactResponse{
+		Items:      compactedItems,
+		TokenUsage: resp.TokenUsage,
+	}, nil
+}
+
+// compactionPrompt is the prompt sent to the LLM for local context compaction.
+// Ported from: codex-rs/core/templates/compact/compact_prompt.md
+const compactionPrompt = `You are performing a CONTEXT CHECKPOINT COMPACTION.
+
+Your task is to create a concise but comprehensive summary of the conversation so far.
+This summary will replace the conversation history, so it must contain ALL information
+needed to continue the task without loss.
+
+Include:
+1. The original user request/goal
+2. All significant decisions made and their rationale
+3. Current state of the work (what's done, what's in progress, what's remaining)
+4. File paths, function names, and other specific identifiers that were discussed
+5. Any errors encountered and how they were resolved
+6. Key code changes or architectural decisions
+7. Tool calls made and their results (summarized)
+
+Format your response as a structured summary. Be thorough but concise.
+Do NOT include any conversational pleasantries or meta-commentary about the compaction.`
+
+// compactionSummaryPrefix is prepended to the summary when rebuilding history.
+// Ported from: codex-rs/core/templates/compact/compact_summary_prefix.md
+const compactionSummaryPrefix = `Another language model started to solve this problem and ran out of context. Here is a summary of the conversation so far:
+
+`
+
+// extractLastAssistantMessage finds the last assistant message content from items.
+func extractLastAssistantMessage(items []models.ConversationItem) string {
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Type == models.ItemTypeAssistantMessage && items[i].Content != "" {
+			return items[i].Content
+		}
+	}
+	return ""
+}
+
+// collectRecentUserMessages iterates backwards through items, collecting user
+// messages and their associated tool call items within a token budget.
+// Uses ~4 chars/token estimate.
+func collectRecentUserMessages(items []models.ConversationItem, tokenBudget int) []models.ConversationItem {
+	charBudget := tokenBudget * 4
+	var collected []models.ConversationItem
+	usedChars := 0
+
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
+		// Skip compaction markers, turn markers
+		if item.Type == models.ItemTypeCompaction ||
+			item.Type == models.ItemTypeTurnStarted ||
+			item.Type == models.ItemTypeTurnComplete {
+			continue
+		}
+
+		// Estimate chars for this item
+		itemChars := len(item.Content) + len(item.Arguments)
+		if item.Output != nil {
+			itemChars += len(item.Output.Content)
+		}
+
+		if usedChars+itemChars > charBudget && len(collected) > 0 {
+			break
+		}
+
+		collected = append(collected, item)
+		usedChars += itemChars
+	}
+
+	// Reverse to restore chronological order
+	for i, j := 0, len(collected)-1; i < j; i, j = i+1, j-1 {
+		collected[i], collected[j] = collected[j], collected[i]
+	}
+
+	return collected
+}
+
+// buildCompactedHistory assembles the compacted history from a summary and recent items.
+// Returns: [compaction marker, summary as assistant message, recent items...]
+func buildCompactedHistory(summary string, recentItems []models.ConversationItem) []models.ConversationItem {
+	items := make([]models.ConversationItem, 0, 2+len(recentItems))
+
+	// Compaction marker
+	items = append(items, models.ConversationItem{
+		Type:    models.ItemTypeCompaction,
+		Content: "context_compacted",
+	})
+
+	// Summary as an assistant message with the prefix
+	items = append(items, models.ConversationItem{
+		Type:    models.ItemTypeAssistantMessage,
+		Content: compactionSummaryPrefix + summary,
+	})
+
+	// Recent items
+	items = append(items, recentItems...)
+
+	return items
+}
+
 // classifyAnthropicError categorizes an Anthropic API error using the HTTP
 // status code when available, falling back to message-based heuristics.
 func classifyAnthropicError(err error) error {

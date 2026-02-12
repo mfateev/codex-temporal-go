@@ -35,7 +35,8 @@ func startWorkflowCmd(c client.Client, config Config) tea.Cmd {
 					MaxTokens:     4096,
 					ContextWindow: 128000,
 				},
-				Tools: models.DefaultToolsConfig(),
+				Tools:                    models.DefaultToolsConfig(),
+				AutoCompactTokenLimit:    128000 * 4 / 5, // 80% of context window
 				ApprovalMode:             config.ApprovalMode,
 				CodexHome:                config.CodexHome,
 				SandboxMode:              config.SandboxMode,

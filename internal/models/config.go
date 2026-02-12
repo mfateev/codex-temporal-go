@@ -99,6 +99,11 @@ type SessionConfiguration struct {
 	EnvSet                   map[string]string `json:"env_set,omitempty"`                     // Explicit overrides
 	EnvIncludeOnly           []string          `json:"env_include_only,omitempty"`             // Whitelist (if non-empty)
 
+	// Context compaction threshold (in estimated tokens). When the conversation
+	// history exceeds this limit, proactive compaction is triggered. 0 = disabled.
+	// Maps to: codex-rs auto_compact_token_limit
+	AutoCompactTokenLimit int `json:"auto_compact_token_limit,omitempty"`
+
 	// Session metadata
 	SessionSource string `json:"session_source,omitempty"` // "cli", "api", "exec" — for logging/tracking
 

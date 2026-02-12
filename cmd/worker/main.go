@@ -73,6 +73,7 @@ func main() {
 	// Register activities
 	llmActivities := activities.NewLLMActivities(llmClient)
 	w.RegisterActivity(llmActivities.ExecuteLLMCall)
+	w.RegisterActivity(llmActivities.ExecuteCompact)
 
 	toolActivities := activities.NewToolActivities(toolRegistry)
 	w.RegisterActivity(toolActivities.ExecuteTool)

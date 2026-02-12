@@ -480,6 +480,9 @@ func (s *SessionState) continueAsNew(ctx workflow.Context) (WorkflowResult, erro
 func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 	logger := workflow.GetLogger(ctx)
 
+	// Reset compaction guard for this turn
+	s.compactedThisTurn = false
+
 	for s.IterationCount < s.MaxIterations {
 		// Check for interrupt before each iteration
 		if s.Interrupted {
@@ -488,6 +491,20 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 		}
 
 		logger.Info("Starting iteration", "iteration", s.IterationCount, "turn_id", s.CurrentTurnID)
+
+		// Proactive compaction: check if history exceeds the token limit before
+		// calling the LLM. This prevents context overflow errors.
+		if s.Config.AutoCompactTokenLimit > 0 && !s.compactedThisTurn {
+			estimated, _ := s.History.EstimateTokenCount()
+			if estimated >= s.Config.AutoCompactTokenLimit {
+				logger.Info("Proactive compaction triggered",
+					"estimated_tokens", estimated,
+					"limit", s.Config.AutoCompactTokenLimit)
+				if err := s.performCompaction(ctx); err != nil {
+					logger.Warn("Proactive compaction failed, continuing without", "error", err)
+				}
+			}
+		}
 
 		// Get history for prompt — supports incremental sends when a previous
 		// response ID is available (OpenAI Responses API optimization).
@@ -543,18 +560,21 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 			if errors.As(err, &appErr) {
 				switch appErr.Type() {
 				case models.LLMErrTypeContextOverflow:
-					turnCount, _ := s.History.GetTurnCount()
-					keepTurns := turnCount / 2
-					if keepTurns < 2 {
-						keepTurns = 2
+					logger.Warn("Context overflow, attempting compaction")
+					if err := s.performCompaction(ctx); err != nil {
+						// Fall back to destructive drop
+						logger.Warn("Compaction failed, falling back to destructive drop", "error", err)
+						turnCount, _ := s.History.GetTurnCount()
+						keepTurns := turnCount / 2
+						if keepTurns < 2 {
+							keepTurns = 2
+						}
+						s.History.DropOldestUserTurns(keepTurns)
 					}
-					dropped, _ := s.History.DropOldestUserTurns(keepTurns)
 					// Reset incremental send state — history was modified
 					s.LastResponseID = ""
 					s.lastSentHistoryLen = 0
-					logger.Warn("Context overflow, compacted history",
-						"dropped_items", dropped, "kept_turns", keepTurns)
-					return true, nil
+					continue // retry LLM call with compacted history
 
 				case models.LLMErrTypeAPILimit:
 					logger.Warn("API rate limit, sleeping for 1 minute")

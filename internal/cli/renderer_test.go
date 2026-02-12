@@ -627,3 +627,22 @@ func TestFormatToolCall(t *testing.T) {
 		})
 	}
 }
+
+// --- Compaction rendering tests ---
+
+func TestItemRenderer_RenderCompaction(t *testing.T) {
+	r := newTestRenderer()
+	result := r.RenderItem(models.ConversationItem{
+		Type:    models.ItemTypeCompaction,
+		Content: "context_compacted",
+	}, false)
+
+	assert.NotEmpty(t, result)
+	assert.Contains(t, result, "●")
+	assert.Contains(t, result, "[Context compacted]")
+}
+
+func TestPhaseMessage_Compacting(t *testing.T) {
+	result := PhaseMessage(workflow.PhaseCompacting, nil)
+	assert.Equal(t, "Compacting context...", result)
+}
