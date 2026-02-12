@@ -22,6 +22,7 @@ import (
 	"github.com/mfateev/codex-temporal-go/internal/instructions"
 	"github.com/mfateev/codex-temporal-go/internal/models"
 	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/codex-temporal-go/internal/version"
 )
 
 // IdleTimeout is how long the workflow waits for user input before triggering ContinueAsNew.
@@ -124,14 +125,16 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	err = workflow.SetQueryHandler(ctx, QueryGetTurnStatus, func() (TurnStatus, error) {
 		turnCount, _ := s.History.GetTurnCount()
 		return TurnStatus{
-			Phase:              s.Phase,
-			CurrentTurnID:      s.CurrentTurnID,
-			ToolsInFlight:      s.ToolsInFlight,
-			PendingApprovals:   s.PendingApprovals,
-			PendingEscalations: s.PendingEscalations,
-			IterationCount:     s.IterationCount,
-			TotalTokens:        s.TotalTokens,
-			TurnCount:          turnCount,
+			Phase:                   s.Phase,
+			CurrentTurnID:           s.CurrentTurnID,
+			ToolsInFlight:           s.ToolsInFlight,
+			PendingApprovals:        s.PendingApprovals,
+			PendingEscalations:      s.PendingEscalations,
+			PendingUserInputRequest: s.PendingUserInputReq,
+			IterationCount:          s.IterationCount,
+			TotalTokens:             s.TotalTokens,
+			TurnCount:               turnCount,
+			WorkerVersion:           version.GitCommit,
 		}, nil
 	})
 	if err != nil {
@@ -247,6 +250,10 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 		func(ctx workflow.Context, resp ApprovalResponse) (ApprovalResponseAck, error) {
 			s.ApprovalResponse = &resp
 			s.ApprovalReceived = true
+			// Clear PendingApprovals immediately so the query handler reflects
+			// the response before the main coroutine wakes from Await.
+			// Without this, the CLI may poll and re-enter the approval prompt.
+			s.PendingApprovals = nil
 			return ApprovalResponseAck{}, nil
 		},
 		workflow.UpdateHandlerOptions{
@@ -270,6 +277,7 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 		func(ctx workflow.Context, resp EscalationResponse) (EscalationResponseAck, error) {
 			s.EscalationResponse = &resp
 			s.EscalationReceived = true
+			s.PendingEscalations = nil
 			return EscalationResponseAck{}, nil
 		},
 		workflow.UpdateHandlerOptions{
@@ -283,6 +291,30 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	)
 	if err != nil {
 		logger.Error("Failed to register escalation_response update handler", "error", err)
+	}
+
+	// Update: user_input_question_response
+	// Maps to: Codex request_user_input flow (user answers multi-choice questions)
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdateUserInputQuestionResponse,
+		func(ctx workflow.Context, resp UserInputQuestionResponse) (UserInputQuestionResponseAck, error) {
+			s.UserInputQResponse = &resp
+			s.UserInputQReceived = true
+			s.PendingUserInputReq = nil
+			return UserInputQuestionResponseAck{}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, resp UserInputQuestionResponse) error {
+				if s.Phase != PhaseUserInputPending {
+					return fmt.Errorf("no user input question pending")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register user_input_question_response update handler", "error", err)
 	}
 }
 
@@ -562,6 +594,40 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 			}
 		}
 
+		// Intercept request_user_input calls — these are handled by the workflow,
+		// not dispatched as activities. Separate them from normal tool calls.
+		// Maps to: codex-rs/protocol/src/request_user_input.rs
+		hadUserInputCalls := false
+		if len(functionCalls) > 0 {
+			var normalCalls []models.ConversationItem
+			for _, fc := range functionCalls {
+				if fc.Name == "request_user_input" {
+					hadUserInputCalls = true
+					outputItem, err := s.handleRequestUserInput(ctx, fc)
+					if err != nil {
+						return false, err
+					}
+					if err := s.History.AddItem(outputItem); err != nil {
+						return false, fmt.Errorf("failed to add user input response: %w", err)
+					}
+				} else {
+					normalCalls = append(normalCalls, fc)
+				}
+			}
+			functionCalls = normalCalls
+		}
+
+		// If only request_user_input calls were present (no normal tools),
+		// continue to next LLM iteration so it can use the user's answers.
+		if hadUserInputCalls && len(functionCalls) == 0 {
+			// Check for interrupt/shutdown after user input
+			if s.Interrupted || s.ShutdownRequested {
+				return false, nil
+			}
+			s.IterationCount++
+			continue
+		}
+
 		// Detect repeated identical tool calls (tight-loop prevention).
 		// If the LLM is calling the same tools with the same args repeatedly,
 		// it's likely stuck. End the turn early so the user can intervene.
@@ -642,10 +708,10 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 					}
 				}
 
-				// If all tools were denied, continue loop for next LLM iteration
+				// If all tools were denied, end the turn so the user can
+				// provide guidance on what to do instead.
 				if len(functionCalls) == 0 {
-					s.IterationCount++
-					continue
+					return false, nil
 				}
 			}
 
@@ -843,7 +909,145 @@ func buildToolSpecs(config models.ToolsConfig) []tools.ToolSpec {
 		specs = append(specs, tools.NewApplyPatchToolSpec())
 	}
 
+	// request_user_input is always available (intercepted by workflow, not dispatched)
+	specs = append(specs, tools.NewRequestUserInputToolSpec())
+
 	return specs
+}
+
+// handleRequestUserInput intercepts a request_user_input tool call, parses the
+// arguments, sets the pending phase, waits for the user's response, and returns
+// a FunctionCallOutput item with the user's answers as JSON.
+//
+// Maps to: codex-rs/protocol/src/request_user_input.rs
+func (s *SessionState) handleRequestUserInput(ctx workflow.Context, fc models.ConversationItem) (models.ConversationItem, error) {
+	logger := workflow.GetLogger(ctx)
+
+	// Parse and validate the arguments
+	questions, err := parseRequestUserInputArgs(fc.Arguments)
+	if err != nil {
+		logger.Warn("Invalid request_user_input args", "error", err)
+		falseVal := false
+		return models.ConversationItem{
+			Type:   models.ItemTypeFunctionCallOutput,
+			CallID: fc.CallID,
+			Output: &models.FunctionCallOutputPayload{
+				Content: fmt.Sprintf("Invalid request_user_input arguments: %v", err),
+				Success: &falseVal,
+			},
+		}, nil
+	}
+
+	// Set pending state
+	s.Phase = PhaseUserInputPending
+	s.PendingUserInputReq = &PendingUserInputRequest{
+		CallID:    fc.CallID,
+		Questions: questions,
+	}
+	s.UserInputQReceived = false
+	s.UserInputQResponse = nil
+
+	logger.Info("Waiting for user input response", "question_count", len(questions))
+
+	// Wait for user response or interrupt
+	err = workflow.Await(ctx, func() bool {
+		return s.UserInputQReceived || s.Interrupted || s.ShutdownRequested
+	})
+	if err != nil {
+		return models.ConversationItem{}, fmt.Errorf("user input await failed: %w", err)
+	}
+
+	s.PendingUserInputReq = nil
+
+	if s.Interrupted || s.ShutdownRequested {
+		logger.Info("User input wait interrupted")
+		falseVal := false
+		return models.ConversationItem{
+			Type:   models.ItemTypeFunctionCallOutput,
+			CallID: fc.CallID,
+			Output: &models.FunctionCallOutputPayload{
+				Content: "User input request was interrupted.",
+				Success: &falseVal,
+			},
+		}, nil
+	}
+
+	// Build the response JSON
+	responseJSON, err := json.Marshal(s.UserInputQResponse)
+	if err != nil {
+		return models.ConversationItem{}, fmt.Errorf("failed to marshal user input response: %w", err)
+	}
+
+	trueVal := true
+	return models.ConversationItem{
+		Type:   models.ItemTypeFunctionCallOutput,
+		CallID: fc.CallID,
+		Output: &models.FunctionCallOutputPayload{
+			Content: string(responseJSON),
+			Success: &trueVal,
+		},
+	}, nil
+}
+
+// parseRequestUserInputArgs validates and parses the request_user_input arguments.
+// Returns parsed questions or an error if the args are invalid.
+func parseRequestUserInputArgs(argsJSON string) ([]RequestUserInputQuestion, error) {
+	var args struct {
+		Questions []struct {
+			ID       string `json:"id"`
+			Header   string `json:"header,omitempty"`
+			Question string `json:"question"`
+			IsOther  bool   `json:"is_other,omitempty"`
+			Options  []struct {
+				Label       string `json:"label"`
+				Description string `json:"description,omitempty"`
+			} `json:"options"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	if len(args.Questions) == 0 {
+		return nil, fmt.Errorf("questions array must not be empty")
+	}
+	if len(args.Questions) > 4 {
+		return nil, fmt.Errorf("at most 4 questions allowed, got %d", len(args.Questions))
+	}
+
+	questions := make([]RequestUserInputQuestion, len(args.Questions))
+	for i, q := range args.Questions {
+		if q.ID == "" {
+			return nil, fmt.Errorf("question %d: id is required", i+1)
+		}
+		if q.Question == "" {
+			return nil, fmt.Errorf("question %d: question text is required", i+1)
+		}
+		if len(q.Options) == 0 {
+			return nil, fmt.Errorf("question %d: options must not be empty", i+1)
+		}
+
+		options := make([]RequestUserInputQuestionOption, len(q.Options))
+		for j, opt := range q.Options {
+			if opt.Label == "" {
+				return nil, fmt.Errorf("question %d, option %d: label is required", i+1, j+1)
+			}
+			options[j] = RequestUserInputQuestionOption{
+				Label:       opt.Label,
+				Description: opt.Description,
+			}
+		}
+
+		questions[i] = RequestUserInputQuestion{
+			ID:       q.ID,
+			Header:   q.Header,
+			Question: q.Question,
+			IsOther:  q.IsOther,
+			Options:  options,
+		}
+	}
+
+	return questions, nil
 }
 
 // toolActivityErrorToOutput converts a tool activity error into a ToolActivityOutput
@@ -989,8 +1193,8 @@ func evaluateToolApproval(
 	mode models.ApprovalMode,
 ) (tools.ExecApprovalRequirement, string) {
 	switch toolName {
-	case "read_file", "list_dir", "grep_files":
-		return tools.ApprovalSkip, "" // Read-only tools always safe
+	case "read_file", "list_dir", "grep_files", "request_user_input":
+		return tools.ApprovalSkip, "" // Read-only / workflow-intercepted tools always safe
 
 	case "shell":
 		return evaluateShellApproval(arguments, policyMgr, mode)

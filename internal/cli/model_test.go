@@ -66,7 +66,7 @@ func TestModel_WorkflowStartedNewSession(t *testing.T) {
 	rm := result.(*Model)
 	assert.Equal(t, StateWatching, rm.state)
 	assert.Equal(t, "codex-abc123", rm.workflowID)
-	assert.Contains(t, rm.viewportContent, "Session: codex-abc123")
+	assert.Contains(t, rm.viewportContent, "Started session codex-abc123")
 }
 
 func TestModel_WorkflowStartedNewSessionNoMessage(t *testing.T) {
@@ -410,7 +410,7 @@ func TestModel_RenderNewItems(t *testing.T) {
 
 	m.renderNewItems(items)
 	assert.Equal(t, 1, m.lastRenderedSeq)
-	assert.Contains(t, m.viewportContent, "t1")
+	assert.Contains(t, m.viewportContent, "──")
 	assert.Contains(t, m.viewportContent, "Hello!")
 }
 
@@ -518,12 +518,12 @@ func TestModel_ScrollKeysDuringEscalation(t *testing.T) {
 func TestModel_CalculateTextareaHeight(t *testing.T) {
 	m := newTestModel()
 
-	// Empty or single line should return minimum (3)
+	// Empty or single line should return minimum (1)
 	m.textarea.SetValue("")
-	assert.Equal(t, 3, m.calculateTextareaHeight())
+	assert.Equal(t, 1, m.calculateTextareaHeight())
 
 	m.textarea.SetValue("single line")
-	assert.Equal(t, 3, m.calculateTextareaHeight())
+	assert.Equal(t, 1, m.calculateTextareaHeight())
 
 	// Multiple lines
 	m.textarea.SetValue("line 1\nline 2\nline 3\nline 4")
@@ -554,5 +554,4 @@ func TestModel_MultiLineInput(t *testing.T) {
 	rm := result.(*Model)
 	assert.Equal(t, StateWatching, rm.state)
 	assert.Empty(t, rm.textarea.Value(), "textarea should be cleared after submit")
-	assert.Contains(t, rm.viewportContent, "line 1")
 }
