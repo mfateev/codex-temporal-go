@@ -496,6 +496,13 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, sendShutdownCmd(m.client, m.workflowID)
 		}
 
+		// Add turn separator before user message (except for the first turn,
+		// detected by whether any workflow items have been rendered yet).
+		// This groups user input + LLM output together within each turn.
+		if m.lastRenderedSeq > 0 {
+			m.appendToViewport(m.renderer.RenderTurnSeparator())
+		}
+
 		// Show user message in viewport
 		m.appendToViewport(m.renderer.RenderUserMessage(models.ConversationItem{
 			Type:    models.ItemTypeUserMessage,

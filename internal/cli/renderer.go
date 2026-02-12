@@ -57,7 +57,13 @@ func NewItemRenderer(width int, noColor, noMarkdown bool, styles Styles) *ItemRe
 func (r *ItemRenderer) RenderItem(item models.ConversationItem, isResume bool) string {
 	switch item.Type {
 	case models.ItemTypeTurnStarted:
-		return r.RenderTurnStarted(item)
+		if isResume {
+			// During resume, render separator before each turn's user message
+			return r.RenderTurnSeparator()
+		}
+		// In live mode, separator is rendered by the input handler
+		// before the user message to group user input + LLM output together.
+		return ""
 	case models.ItemTypeUserMessage:
 		if isResume {
 			return r.RenderUserMessage(item)
@@ -76,13 +82,13 @@ func (r *ItemRenderer) RenderItem(item models.ConversationItem, isResume bool) s
 	}
 }
 
-// RenderTurnStarted renders a turn separator.
-func (r *ItemRenderer) RenderTurnStarted(item models.ConversationItem) string {
+// RenderTurnSeparator renders a horizontal rule to visually separate turns.
+func (r *ItemRenderer) RenderTurnSeparator() string {
 	w := r.width
 	if w <= 0 {
 		w = 80
 	}
-	return r.styles.TurnSeparator.Render(strings.Repeat("─", w)) + "\n"
+	return "\n" + r.styles.TurnSeparator.Render(strings.Repeat("─", w)) + "\n\n"
 }
 
 // RenderSystemMessage renders a system-level message with a yellow bullet.

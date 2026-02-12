@@ -81,12 +81,22 @@ func TestItemRenderer_RenderFunctionCallOutput_Failure(t *testing.T) {
 	assert.Contains(t, result, "command not found")
 }
 
-func TestItemRenderer_RenderTurnStarted(t *testing.T) {
+func TestItemRenderer_TurnStartedNotRenderedInLiveMode(t *testing.T) {
 	r := newTestRenderer()
 	result := r.RenderItem(models.ConversationItem{
 		Type:   models.ItemTypeTurnStarted,
 		TurnID: "turn-123",
 	}, false)
+
+	assert.Empty(t, result, "TurnStarted should not render in live mode (separator is handled by input handler)")
+}
+
+func TestItemRenderer_TurnStartedRenderedInResumeMode(t *testing.T) {
+	r := newTestRenderer()
+	result := r.RenderItem(models.ConversationItem{
+		Type:   models.ItemTypeTurnStarted,
+		TurnID: "turn-123",
+	}, true)
 
 	assert.NotEmpty(t, result)
 	assert.Contains(t, result, "──")
