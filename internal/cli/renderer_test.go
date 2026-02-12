@@ -91,15 +91,14 @@ func TestItemRenderer_TurnStartedNotRenderedInLiveMode(t *testing.T) {
 	assert.Empty(t, result, "TurnStarted should not render in live mode (separator is handled by input handler)")
 }
 
-func TestItemRenderer_TurnStartedRenderedInResumeMode(t *testing.T) {
+func TestItemRenderer_TurnStartedNotRenderedInResumeMode(t *testing.T) {
 	r := newTestRenderer()
 	result := r.RenderItem(models.ConversationItem{
 		Type:   models.ItemTypeTurnStarted,
 		TurnID: "turn-123",
 	}, true)
 
-	assert.NotEmpty(t, result)
-	assert.Contains(t, result, "──")
+	assert.Empty(t, result, "TurnStarted should not render in viewport (input area has its own separators)")
 }
 
 func TestItemRenderer_TurnCompleteNotRendered(t *testing.T) {

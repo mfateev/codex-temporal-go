@@ -57,12 +57,7 @@ func NewItemRenderer(width int, noColor, noMarkdown bool, styles Styles) *ItemRe
 func (r *ItemRenderer) RenderItem(item models.ConversationItem, isResume bool) string {
 	switch item.Type {
 	case models.ItemTypeTurnStarted:
-		if isResume {
-			// During resume, render separator before each turn's user message
-			return r.RenderTurnSeparator()
-		}
-		// In live mode, separator is rendered by the input handler
-		// before the user message to group user input + LLM output together.
+		// No separator in viewport — the input area has its own separators.
 		return ""
 	case models.ItemTypeUserMessage:
 		if isResume {
@@ -88,7 +83,7 @@ func (r *ItemRenderer) RenderTurnSeparator() string {
 	if w <= 0 {
 		w = 80
 	}
-	return "\n" + r.styles.TurnSeparator.Render(strings.Repeat("─", w)) + "\n\n"
+	return r.styles.TurnSeparator.Render(strings.Repeat("─", w)) + "\n"
 }
 
 // RenderSystemMessage renders a system-level message with a yellow bullet.
@@ -97,9 +92,10 @@ func (r *ItemRenderer) RenderSystemMessage(text string) string {
 	return bullet + " " + text + "\n"
 }
 
-// RenderUserMessage renders a user message with a distinct background.
+// RenderUserMessage renders a user message with a chevron prefix and background.
 func (r *ItemRenderer) RenderUserMessage(item models.ConversationItem) string {
-	return r.styles.UserMessage.Render(item.Content) + "\n"
+	chevron := r.styles.UserChevron.Render("❯")
+	return chevron + " " + item.Content + "\n"
 }
 
 // RenderAssistantMessage renders an assistant message with optional markdown.
@@ -112,10 +108,10 @@ func (r *ItemRenderer) RenderAssistantMessage(item models.ConversationItem) stri
 	if r.mdRenderer != nil {
 		rendered, err := r.mdRenderer.Render(content)
 		if err == nil {
-			return bullet + " " + strings.TrimLeft(rendered, "\n")
+			return "\n" + bullet + " " + strings.TrimLeft(rendered, "\n")
 		}
 	}
-	return bullet + " " + content + "\n"
+	return "\n" + bullet + " " + content + "\n"
 }
 
 // RenderFunctionCall renders a function call invocation.
@@ -125,9 +121,9 @@ func (r *ItemRenderer) RenderFunctionCall(item models.ConversationItem) string {
 	bullet := r.styles.ToolBullet.Render("●")
 	styledVerb := r.styles.ToolVerb.Render(verb)
 	if detail != "" {
-		return bullet + " " + styledVerb + " " + detail + "\n"
+		return "\n" + bullet + " " + styledVerb + " " + detail + "\n"
 	}
-	return bullet + " " + styledVerb + "\n"
+	return "\n" + bullet + " " + styledVerb + "\n"
 }
 
 // RenderFunctionCallOutput renders function call output in Codex style.
