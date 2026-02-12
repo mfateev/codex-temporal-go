@@ -70,11 +70,19 @@ func (r *ItemRenderer) RenderItem(item models.ConversationItem, isResume bool) s
 		return r.RenderFunctionCall(item)
 	case models.ItemTypeFunctionCallOutput:
 		return r.RenderFunctionCallOutput(item)
+	case models.ItemTypeCompaction:
+		return r.RenderCompaction(item)
 	case models.ItemTypeTurnComplete:
 		return ""
 	default:
 		return ""
 	}
+}
+
+// RenderCompaction renders a compaction marker.
+func (r *ItemRenderer) RenderCompaction(item models.ConversationItem) string {
+	bullet := r.styles.SystemBullet.Render("●")
+	return bullet + " [Context compacted]\n"
 }
 
 // RenderTurnSeparator renders a horizontal rule to visually separate turns.
@@ -325,6 +333,8 @@ func PhaseMessage(phase workflow.TurnPhase, toolsInFlight []string) string {
 		return "Waiting for escalation decision..."
 	case workflow.PhaseUserInputPending:
 		return "Waiting for your answer..."
+	case workflow.PhaseCompacting:
+		return "Compacting context..."
 	default:
 		return "Working..."
 	}

@@ -84,6 +84,48 @@ func (a *LLMActivities) ExecuteLLMCall(ctx context.Context, input LLMActivityInp
 	}, nil
 }
 
+// CompactActivityInput is the input for the compact activity.
+//
+// Maps to: codex-rs/core/src/compact.rs compact operation input
+type CompactActivityInput struct {
+	Model        string                      `json:"model"`
+	Input        []models.ConversationItem   `json:"input"`
+	Instructions string                      `json:"instructions,omitempty"`
+}
+
+// CompactActivityOutput is the output from the compact activity.
+//
+// Maps to: codex-rs/core/src/compact.rs compact operation output
+type CompactActivityOutput struct {
+	Items      []models.ConversationItem `json:"items"`
+	TokenUsage models.TokenUsage         `json:"token_usage"`
+}
+
+// ExecuteCompact performs context compaction via the LLM provider.
+// For OpenAI, uses remote compaction (POST /responses/compact).
+// For other providers, uses local compaction (LLM summarization).
+//
+// Maps to: codex-rs/core/src/compact.rs compact operation
+func (a *LLMActivities) ExecuteCompact(ctx context.Context, input CompactActivityInput) (CompactActivityOutput, error) {
+	resp, err := a.client.Compact(ctx, llm.CompactRequest{
+		Model:        input.Model,
+		Input:        input.Input,
+		Instructions: input.Instructions,
+	})
+	if err != nil {
+		var activityErr *models.ActivityError
+		if errors.As(err, &activityErr) {
+			return CompactActivityOutput{}, models.WrapActivityError(activityErr)
+		}
+		return CompactActivityOutput{}, err
+	}
+
+	return CompactActivityOutput{
+		Items:      resp.Items,
+		TokenUsage: resp.TokenUsage,
+	}, nil
+}
+
 // EstimateContextUsage estimates if we're approaching context window limits.
 func (a *LLMActivities) EstimateContextUsage(ctx context.Context, history []models.ConversationItem, contextWindow int) (float64, error) {
 	totalChars := 0

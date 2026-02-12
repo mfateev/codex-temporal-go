@@ -41,6 +41,11 @@ type ContextManager interface {
 	// Maps to: codex-rs clone_history().raw_items()
 	GetRawItems() ([]models.ConversationItem, error)
 
+	// ReplaceAll replaces all history items with the given items.
+	// Used after compaction to swap in the compacted history.
+	// Re-assigns Seq numbers starting from 0.
+	ReplaceAll(items []models.ConversationItem) error
+
 	// Query operations
 
 	// GetTurnCount returns the number of user turns

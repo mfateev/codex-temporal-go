@@ -50,12 +50,17 @@ func LoadExecPolicy(_ context.Context, _ activities.LoadExecPolicyInput) (activi
 	panic("stub: should be mocked")
 }
 
+func ExecuteCompact(_ context.Context, _ activities.CompactActivityInput) (activities.CompactActivityOutput, error) {
+	panic("stub: should be mocked")
+}
+
 func (s *AgenticWorkflowTestSuite) SetupTest() {
 	s.env = s.NewTestWorkflowEnvironment()
 	s.env.RegisterActivity(ExecuteLLMCall)
 	s.env.RegisterActivity(ExecuteTool)
 	s.env.RegisterActivity(LoadWorkerInstructions)
 	s.env.RegisterActivity(LoadExecPolicy)
+	s.env.RegisterActivity(ExecuteCompact)
 
 	// Default mock for LoadWorkerInstructions — returns empty docs.
 	// Tests that need specific worker docs can override this.
@@ -65,6 +70,11 @@ func (s *AgenticWorkflowTestSuite) SetupTest() {
 	// Default mock for LoadExecPolicy — returns empty rules.
 	s.env.OnActivity("LoadExecPolicy", mock.Anything, mock.Anything).
 		Return(activities.LoadExecPolicyOutput{}, nil).Maybe()
+
+	// Default mock for ExecuteCompact — returns failure to trigger fallback.
+	// Tests that need compaction to succeed should override this.
+	s.env.OnActivity("ExecuteCompact", mock.Anything, mock.Anything).
+		Return(activities.CompactActivityOutput{}, fmt.Errorf("compaction not configured")).Maybe()
 }
 
 func (s *AgenticWorkflowTestSuite) AfterTest(suiteName, testName string) {
@@ -609,10 +619,10 @@ func TestSessionState_MultiTurnFieldsSerialize(t *testing.T) {
 	assert.Equal(t, []string{"shell", "read_file"}, state.ToolCallsExecuted)
 }
 
-// TestMultiTurn_ContextOverflow_CompactsHistory verifies that a ContextOverflow
-// error triggers history compaction before ContinueAsNew. The second workflow
-// execution should have fewer history items.
-func (s *AgenticWorkflowTestSuite) TestMultiTurn_ContextOverflow_CompactsHistory() {
+// TestMultiTurn_ContextOverflow_CompactsAndRetries verifies that a ContextOverflow
+// error triggers compaction (falling back to destructive drop) and then retries
+// the LLM call instead of triggering ContinueAsNew.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ContextOverflow_CompactsAndRetries() {
 	// First LLM call succeeds
 	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
 		Return(mockLLMStopResponse("First response", 40), nil).Once()
@@ -623,6 +633,9 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ContextOverflow_CompactsHistory
 	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
 		Return(activities.LLMActivityOutput{}, temporal.NewNonRetryableApplicationError(
 			"context too large", models.LLMErrTypeContextOverflow, nil)).Once()
+	// Fourth LLM call succeeds (retry after compaction/fallback)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Recovered response", 30), nil).Once()
 
 	// Send second user input
 	s.env.RegisterDelayedCallback(func() {
@@ -630,20 +643,26 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ContextOverflow_CompactsHistory
 			UserInput{Content: "Second question"})
 	}, time.Second*2)
 
-	// Send third user input (will trigger overflow)
+	// Send third user input (will trigger overflow, then recover)
 	s.env.RegisterDelayedCallback(func() {
 		s.env.UpdateWorkflow(UpdateUserInput, "input-3", noopCallback(),
 			UserInput{Content: "Third question"})
 	}, time.Second*4)
 
+	// Send shutdown after recovery
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateShutdown, "shutdown", noopCallback(),
+			ShutdownRequest{})
+	}, time.Second*6)
+
 	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("First question"))
 
 	require.True(s.T(), s.env.IsWorkflowCompleted())
 
-	// The workflow should ContinueAsNew after compaction
-	err := s.env.GetWorkflowError()
-	require.Error(s.T(), err)
-	assert.Contains(s.T(), err.Error(), "continue as new")
+	var result WorkflowResult
+	err := s.env.GetWorkflowResult(&result)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "shutdown", result.EndReason)
 }
 
 // TestContextOverflow_CompactsBeforeCAN verifies that the overflow handler

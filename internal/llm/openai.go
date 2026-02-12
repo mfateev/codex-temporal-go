@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -147,6 +148,11 @@ func (c *OpenAIClient) buildInput(history []models.ConversationItem) []responses
 				},
 			})
 
+		case models.ItemTypeCompaction:
+			// Compaction markers are internal tracking items. After compaction,
+			// the history contains a summary as an assistant message which is
+			// already handled above. Skip the marker itself.
+
 		default:
 			// Skip turn_started, turn_complete markers (internal only)
 		}
@@ -268,6 +274,111 @@ func (c *OpenAIClient) buildToolDefinitions(specs []tools.ToolSpec) []responses.
 	}
 
 	return toolDefs
+}
+
+// Compact performs remote compaction via OpenAI's POST /responses/compact endpoint.
+// Returns opaque compaction items that can be fed back as input to subsequent calls.
+//
+// Maps to: codex-rs/core/src/compact.rs remote compaction path
+func (c *OpenAIClient) Compact(ctx context.Context, request CompactRequest) (CompactResponse, error) {
+	input := c.buildInput(request.Input)
+
+	// Build the raw payload for POST /responses/compact
+	// The SDK doesn't have a Compact method, so we use raw HTTP.
+	payload := map[string]interface{}{
+		"model": request.Model,
+		"input": input,
+	}
+	if request.Instructions != "" {
+		payload["instructions"] = request.Instructions
+	}
+
+	var rawResp map[string]interface{}
+	err := c.client.Post(ctx, "responses/compact", payload, &rawResp)
+	if err != nil {
+		return CompactResponse{}, fmt.Errorf("compact API call failed: %w", err)
+	}
+
+	// Parse the compacted output items from the response
+	items, tokenUsage := parseCompactResponse(rawResp)
+
+	return CompactResponse{
+		Items:      items,
+		TokenUsage: tokenUsage,
+	}, nil
+}
+
+// parseCompactResponse extracts compacted items and token usage from the raw
+// /responses/compact response. Opaque compaction items are stored as
+// ItemTypeCompaction with the raw JSON in Content.
+func parseCompactResponse(raw map[string]interface{}) ([]models.ConversationItem, models.TokenUsage) {
+	var items []models.ConversationItem
+	var usage models.TokenUsage
+
+	// Extract output items
+	if output, ok := raw["output"].([]interface{}); ok {
+		for _, item := range output {
+			itemMap, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			itemType, _ := itemMap["type"].(string)
+
+			switch itemType {
+			case "message":
+				// Preserved user/assistant messages
+				role, _ := itemMap["role"].(string)
+				if content, ok := itemMap["content"].([]interface{}); ok {
+					var text string
+					for _, c := range content {
+						if cm, ok := c.(map[string]interface{}); ok {
+							if t, ok := cm["text"].(string); ok {
+								text += t
+							}
+						}
+					}
+					if role == "user" {
+						items = append(items, models.ConversationItem{
+							Type:    models.ItemTypeUserMessage,
+							Content: text,
+						})
+					} else {
+						items = append(items, models.ConversationItem{
+							Type:    models.ItemTypeAssistantMessage,
+							Content: text,
+						})
+					}
+				}
+
+			default:
+				// Opaque compaction items (compaction_content, etc.) —
+				// store the raw JSON so it can be passed back to OpenAI.
+				rawJSON, err := json.Marshal(item)
+				if err != nil {
+					continue
+				}
+				items = append(items, models.ConversationItem{
+					Type:    models.ItemTypeCompaction,
+					Content: string(rawJSON),
+				})
+			}
+		}
+	}
+
+	// Extract token usage
+	if usageMap, ok := raw["usage"].(map[string]interface{}); ok {
+		if v, ok := usageMap["input_tokens"].(float64); ok {
+			usage.PromptTokens = int(v)
+		}
+		if v, ok := usageMap["output_tokens"].(float64); ok {
+			usage.CompletionTokens = int(v)
+		}
+		if v, ok := usageMap["total_tokens"].(float64); ok {
+			usage.TotalTokens = int(v)
+		}
+	}
+
+	return items, usage
 }
 
 // classifyError categorizes an OpenAI API error using the HTTP status code

@@ -131,6 +131,20 @@ func (h *InMemoryHistory) DropOldestUserTurns(keepN int) (int, error) {
 	return dropped, nil
 }
 
+// ReplaceAll replaces all history items with the given items.
+// Re-assigns Seq numbers starting from 0.
+func (h *InMemoryHistory) ReplaceAll(items []models.ConversationItem) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.items = make([]models.ConversationItem, len(items))
+	copy(h.items, items)
+	for i := range h.items {
+		h.items[i].Seq = i
+	}
+	return nil
+}
+
 // GetRawItems returns raw conversation items for analysis.
 func (h *InMemoryHistory) GetRawItems() ([]models.ConversationItem, error) {
 	h.mu.RLock()

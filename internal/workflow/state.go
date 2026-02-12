@@ -55,6 +55,7 @@ const (
 	PhaseApprovalPending    TurnPhase = "approval_pending"
 	PhaseEscalationPending  TurnPhase = "escalation_pending"
 	PhaseUserInputPending   TurnPhase = "user_input_pending"
+	PhaseCompacting         TurnPhase = "compacting"
 )
 
 // TurnStatus is the response from the get_turn_status query.
@@ -243,6 +244,10 @@ type SessionState struct {
 	// enabling incremental sends (only new items after this index).
 	// Reset on history modification (compaction, DropOldestUserTurns).
 	lastSentHistoryLen int `json:"-"`
+
+	// Context compaction tracking
+	CompactionCount   int  `json:"compaction_count"`   // How many times compaction has occurred
+	compactedThisTurn bool `json:"-"`                  // Prevents double compaction in one turn
 
 	// Repeated tool call detection (transient — not serialized)
 	lastToolKey string `json:"-"`
