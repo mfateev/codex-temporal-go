@@ -746,7 +746,7 @@ func (w *AgenticWorkflow) RefreshTools(ctx workflow.Context) error {
 ### Project Structure
 
 ```
-codex-temporal-go/
+temporal-agent-harness/
 ├── cmd/
 │   ├── worker/          # Temporal worker executable
 │   └── client/          # CLI client for starting workflows
@@ -786,7 +786,7 @@ codex-temporal-go/
 
 This project structure mirrors the original Codex repository (`codex-rs/core/src/`) as closely as possible:
 
-| Codex (Rust) | codex-temporal-go (Go) | Purpose |
+| Codex (Rust) | temporal-agent-harness (Go) | Purpose |
 |---|---|---|
 | `codex.rs` | `workflow/agentic.go` | Main agentic loop |
 | `state/session.rs` | `workflow/state.go` | Session state management |

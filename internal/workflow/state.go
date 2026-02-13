@@ -6,9 +6,9 @@
 package workflow
 
 import (
-	"github.com/mfateev/codex-temporal-go/internal/history"
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/history"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
 // Handler name constants for Temporal query and update handlers.
@@ -43,7 +43,37 @@ const (
 	// UpdateUserInputQuestionResponse submits the user's answers to request_user_input questions.
 	// Maps to: codex-rs/protocol/src/request_user_input.rs
 	UpdateUserInputQuestionResponse = "user_input_question_response"
+
+	// UpdateCompact triggers manual context compaction.
+	UpdateCompact = "compact"
+
+	// SignalAgentInput delivers a user message to a child agent workflow.
+	// Maps to: codex-rs/core/src/agent/control.rs agent input signal
+	SignalAgentInput = "agent_input"
+
+	// SignalAgentShutdown requests a child agent workflow to shut down.
+	// Maps to: codex-rs/core/src/agent/control.rs agent shutdown signal
+	SignalAgentShutdown = "agent_shutdown"
+
+	// UpdatePlanRequest spawns a planner child workflow directly (no LLM round-trip).
+	// The CLI sends this when the user types /plan <message>.
+	UpdatePlanRequest = "plan_request"
+
+	// UpdateModel updates the session's model configuration.
+	// Used by the CLI /model command.
+	UpdateModel = "update_model"
 )
+
+// UpdateModelRequest is the payload for the update_model Update.
+type UpdateModelRequest struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// UpdateModelResponse is returned by the update_model Update.
+type UpdateModelResponse struct {
+	Acknowledged bool `json:"acknowledged"`
+}
 
 // TurnPhase indicates the current phase of the workflow turn.
 type TurnPhase string
@@ -56,6 +86,7 @@ const (
 	PhaseEscalationPending  TurnPhase = "escalation_pending"
 	PhaseUserInputPending   TurnPhase = "user_input_pending"
 	PhaseCompacting         TurnPhase = "compacting"
+	PhaseWaitingForAgents   TurnPhase = "waiting_for_agents"
 )
 
 // TurnStatus is the response from the get_turn_status query.
@@ -66,10 +97,12 @@ type TurnStatus struct {
 	PendingApprovals        []PendingApproval        `json:"pending_approvals,omitempty"`
 	PendingEscalations      []EscalationRequest      `json:"pending_escalations,omitempty"`
 	PendingUserInputRequest *PendingUserInputRequest `json:"pending_user_input_request,omitempty"`
+	ChildAgents             []ChildAgentSummary      `json:"child_agents,omitempty"`
 	IterationCount          int                      `json:"iteration_count"`
 	TotalTokens             int                      `json:"total_tokens"`
 	TurnCount               int                      `json:"turn_count"`
 	WorkerVersion           string                   `json:"worker_version,omitempty"`
+	Suggestion              string                   `json:"suggestion,omitempty"`
 }
 
 // WorkflowInput is the initial input to start a conversation.
@@ -79,6 +112,9 @@ type WorkflowInput struct {
 	ConversationID string                      `json:"conversation_id"`
 	UserMessage    string                      `json:"user_message"`
 	Config         models.SessionConfiguration `json:"config"`
+	// Depth tracks subagent nesting level. 0 = top-level, 1 = child.
+	// Maps to: codex-rs SubAgentSource::ThreadSpawn.depth
+	Depth int `json:"depth,omitempty"`
 }
 
 // UserInput is the payload for the user_input Update.
@@ -189,6 +225,44 @@ type UserInputQuestionResponse struct {
 // UserInputQuestionResponseAck is returned by the user_input_question_response Update.
 type UserInputQuestionResponseAck struct{}
 
+// CompactRequest is the payload for the compact Update.
+type CompactRequest struct{}
+
+// CompactResponse is returned by the compact Update.
+type CompactResponse struct {
+	Acknowledged bool `json:"acknowledged"`
+}
+
+// PlanRequest is the payload for the plan_request Update.
+// Sent by the CLI when the user types /plan <message>.
+type PlanRequest struct {
+	Message string `json:"message"`
+}
+
+// PlanRequestAccepted is returned by the plan_request Update after the planner
+// child workflow has been started. Contains the child's workflow ID so the CLI
+// can communicate with it directly.
+type PlanRequestAccepted struct {
+	AgentID    string `json:"agent_id"`
+	WorkflowID string `json:"workflow_id"`
+}
+
+// ChildAgentSummary is a lightweight view of a child agent for the get_turn_status query.
+type ChildAgentSummary struct {
+	AgentID    string      `json:"agent_id"`
+	WorkflowID string     `json:"workflow_id"`
+	Role       AgentRole   `json:"role"`
+	Status     AgentStatus `json:"status"`
+}
+
+// AgentInputSignal is the payload for the agent_input signal.
+// Sent from parent to child workflow via SignalExternalWorkflow.
+// Maps to: codex-rs/core/src/agent/control.rs AgentInputSignal
+type AgentInputSignal struct {
+	Content   string `json:"content"`
+	Interrupt bool   `json:"interrupt"`
+}
+
 // SessionState is passed through ContinueAsNew.
 // Uses ContextManager interface to allow pluggable storage backends.
 //
@@ -229,6 +303,9 @@ type SessionState struct {
 	UserInputQReceived    bool                       `json:"-"`
 	UserInputQResponse    *UserInputQuestionResponse `json:"-"`
 
+	// Transient: user requested manual compaction via /compact command
+	CompactRequested bool `json:"-"`
+
 	// Exec policy rules (serialized text, persists across ContinueAsNew)
 	ExecPolicyRules string `json:"exec_policy_rules,omitempty"`
 
@@ -256,6 +333,13 @@ type SessionState struct {
 	// Cumulative stats (persist across ContinueAsNew)
 	TotalTokens       int      `json:"total_tokens"`
 	ToolCallsExecuted []string `json:"tool_calls_executed"`
+
+	// Transient: post-turn prompt suggestion (not serialized — best-effort)
+	Suggestion string `json:"-"`
+
+	// Subagent control — manages child workflow lifecycles.
+	// Maps to: codex-rs/core/src/agent/control.rs AgentControl
+	AgentCtl *AgentControl `json:"agent_ctl,omitempty"`
 }
 
 // WorkflowResult is the final result of the workflow.
@@ -265,6 +349,10 @@ type WorkflowResult struct {
 	TotalTokens       int      `json:"total_tokens"`
 	ToolCallsExecuted []string `json:"tool_calls_executed"`
 	EndReason         string   `json:"end_reason,omitempty"` // "shutdown", "error"
+	// FinalMessage is the last assistant message from the workflow.
+	// Used by parent workflows to get the child's result.
+	// Maps to: codex-rs AgentStatus::Completed(Option<String>)
+	FinalMessage string `json:"final_message,omitempty"`
 }
 
 // initHistory initializes the History field from HistoryItems.

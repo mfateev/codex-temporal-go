@@ -16,13 +16,13 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/mfateev/codex-temporal-go/internal/activities"
-	"github.com/mfateev/codex-temporal-go/internal/execpolicy"
-	"github.com/mfateev/codex-temporal-go/internal/history"
-	"github.com/mfateev/codex-temporal-go/internal/instructions"
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
-	"github.com/mfateev/codex-temporal-go/internal/version"
+	"github.com/mfateev/temporal-agent-harness/internal/activities"
+	"github.com/mfateev/temporal-agent-harness/internal/execpolicy"
+	"github.com/mfateev/temporal-agent-harness/internal/history"
+	"github.com/mfateev/temporal-agent-harness/internal/instructions"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/version"
 )
 
 // IdleTimeout is how long the workflow waits for user input before triggering ContinueAsNew.
@@ -46,6 +46,7 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 		Config:         input.Config,
 		MaxIterations:  20,
 		IterationCount: 0,
+		AgentCtl:       NewAgentControl(input.Depth),
 	}
 
 	// Build tool specs based on configuration
@@ -124,7 +125,7 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	// Returns current turn phase and stats for CLI polling.
 	err = workflow.SetQueryHandler(ctx, QueryGetTurnStatus, func() (TurnStatus, error) {
 		turnCount, _ := s.History.GetTurnCount()
-		return TurnStatus{
+		status := TurnStatus{
 			Phase:                   s.Phase,
 			CurrentTurnID:           s.CurrentTurnID,
 			ToolsInFlight:           s.ToolsInFlight,
@@ -135,7 +136,20 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 			TotalTokens:             s.TotalTokens,
 			TurnCount:               turnCount,
 			WorkerVersion:           version.GitCommit,
-		}, nil
+			Suggestion:              s.Suggestion,
+		}
+		// Populate child agent summaries from AgentControl
+		if s.AgentCtl != nil {
+			for _, info := range s.AgentCtl.Agents {
+				status.ChildAgents = append(status.ChildAgents, ChildAgentSummary{
+					AgentID:    info.AgentID,
+					WorkflowID: info.WorkflowID,
+					Role:       info.Role,
+					Status:     info.Status,
+				})
+			}
+		}
+		return status, nil
 	})
 	if err != nil {
 		logger.Error("Failed to register get_turn_status query handler", "error", err)
@@ -242,6 +256,37 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 		logger.Error("Failed to register shutdown update handler", "error", err)
 	}
 
+	// Update: update_model
+	// Allows the CLI to change the model used for subsequent LLM calls.
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdateModel,
+		func(ctx workflow.Context, req UpdateModelRequest) (UpdateModelResponse, error) {
+			s.Config.Model.Provider = req.Provider
+			s.Config.Model.Model = req.Model
+			// Reset response chaining when switching models.
+			s.LastResponseID = ""
+			return UpdateModelResponse{Acknowledged: true}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, req UpdateModelRequest) error {
+				if req.Provider == "" {
+					return fmt.Errorf("provider must not be empty")
+				}
+				if req.Model == "" {
+					return fmt.Errorf("model must not be empty")
+				}
+				if s.ShutdownRequested {
+					return fmt.Errorf("session is shutting down")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register update_model update handler", "error", err)
+	}
+
 	// Update: approval_response
 	// Maps to: Codex approval flow (user approves/denies tool calls)
 	err = workflow.SetUpdateHandlerWithOptions(
@@ -293,6 +338,31 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 		logger.Error("Failed to register escalation_response update handler", "error", err)
 	}
 
+	// Update: compact
+	// Triggers manual context compaction from the CLI /compact command.
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdateCompact,
+		func(ctx workflow.Context, req CompactRequest) (CompactResponse, error) {
+			s.CompactRequested = true
+			return CompactResponse{Acknowledged: true}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, req CompactRequest) error {
+				if s.ShutdownRequested {
+					return fmt.Errorf("session is shutting down")
+				}
+				if s.Phase == PhaseCompacting {
+					return fmt.Errorf("compaction already in progress")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register compact update handler", "error", err)
+	}
+
 	// Update: user_input_question_response
 	// Maps to: Codex request_user_input flow (user answers multi-choice questions)
 	err = workflow.SetUpdateHandlerWithOptions(
@@ -316,6 +386,122 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 	if err != nil {
 		logger.Error("Failed to register user_input_question_response update handler", "error", err)
 	}
+
+	// Update: plan_request
+	// Spawns a planner child workflow directly (no LLM round-trip) and returns
+	// its workflow ID so the CLI can communicate with it.
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdatePlanRequest,
+		func(ctx workflow.Context, req PlanRequest) (PlanRequestAccepted, error) {
+			childDepth := s.AgentCtl.ParentDepth + 1
+			if childDepth > MaxThreadSpawnDepth {
+				return PlanRequestAccepted{}, fmt.Errorf("cannot spawn planner: maximum nesting depth (%d) exceeded", MaxThreadSpawnDepth)
+			}
+
+			agentID := nextAgentID(ctx)
+
+			// Build planner child workflow input
+			childInput := buildAgentSpawnConfig(s.Config, AgentRolePlanner, req.Message, childDepth)
+
+			// Register agent info
+			info := &AgentInfo{
+				AgentID:     agentID,
+				Role:        AgentRolePlanner,
+				Status:      AgentStatusPendingInit,
+				TaskMessage: req.Message,
+			}
+			s.AgentCtl.Agents[agentID] = info
+
+			// Start child workflow
+			childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+				WorkflowID: s.ConversationID + "/" + agentID,
+			})
+
+			future := workflow.ExecuteChildWorkflow(childCtx, "AgenticWorkflow", childInput)
+
+			// Get the child workflow execution info
+			var childExec workflow.Execution
+			if err := future.GetChildWorkflowExecution().Get(ctx, &childExec); err != nil {
+				info.Status = AgentStatusErrored
+				return PlanRequestAccepted{}, fmt.Errorf("failed to start planner workflow: %w", err)
+			}
+
+			info.WorkflowID = childExec.ID
+			info.RunID = childExec.RunID
+			info.Status = AgentStatusRunning
+
+			// Store future and start watcher
+			s.AgentCtl.childFutures[agentID] = future
+			s.startChildCompletionWatcher(ctx, agentID, future)
+
+			logger.Info("Spawned planner agent",
+				"agent_id", agentID,
+				"child_workflow_id", childExec.ID)
+
+			return PlanRequestAccepted{
+				AgentID:    agentID,
+				WorkflowID: childExec.ID,
+			}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, req PlanRequest) error {
+				if req.Message == "" {
+					return fmt.Errorf("message must not be empty")
+				}
+				if s.ShutdownRequested {
+					return fmt.Errorf("session is shutting down")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register plan_request update handler", "error", err)
+	}
+
+	// Signal channels for child workflow mode (subagent).
+	// These are drained in goroutines so signals are processed asynchronously.
+	// Maps to: codex-rs/core/src/agent/control.rs agent signal handling
+
+	// agent_input — delivers a message from parent to child workflow.
+	agentInputCh := workflow.GetSignalChannel(ctx, SignalAgentInput)
+	workflow.Go(ctx, func(gCtx workflow.Context) {
+		for {
+			var signal AgentInputSignal
+			if !agentInputCh.Receive(gCtx, &signal) {
+				return // channel closed
+			}
+			if signal.Interrupt {
+				s.Interrupted = true
+			}
+
+			turnID := generateTurnID(gCtx)
+			_ = s.History.AddItem(models.ConversationItem{
+				Type:   models.ItemTypeTurnStarted,
+				TurnID: turnID,
+			})
+			_ = s.History.AddItem(models.ConversationItem{
+				Type:    models.ItemTypeUserMessage,
+				Content: signal.Content,
+				TurnID:  turnID,
+			})
+
+			s.CurrentTurnID = turnID
+			s.PendingUserInput = true
+		}
+	})
+
+	// agent_shutdown — requests this child workflow to shut down.
+	agentShutdownCh := workflow.GetSignalChannel(ctx, SignalAgentShutdown)
+	workflow.Go(ctx, func(gCtx workflow.Context) {
+		var ignored interface{}
+		if !agentShutdownCh.Receive(gCtx, &ignored) {
+			return
+		}
+		s.ShutdownRequested = true
+		s.Interrupted = true
+	})
 }
 
 // generateTurnID generates a unique turn ID using Temporal's SideEffect.
@@ -386,31 +572,47 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context) (WorkflowResult, e
 
 	for {
 		// Wait for pending user input (first turn has it set already)
-		if !s.PendingUserInput && !s.ShutdownRequested {
+		if !s.PendingUserInput && !s.ShutdownRequested && !s.CompactRequested {
 			s.Phase = PhaseWaitingForInput
 			s.ToolsInFlight = nil
 			logger.Info("Waiting for user input or shutdown")
 			timedOut, err := awaitWithIdleTimeout(ctx, func() bool {
-				return s.PendingUserInput || s.ShutdownRequested
+				return s.PendingUserInput || s.ShutdownRequested || s.CompactRequested
 			})
 			if err != nil {
 				return WorkflowResult{}, fmt.Errorf("await failed: %w", err)
 			}
 			if timedOut {
-				logger.Info("Idle timeout reached, triggering ContinueAsNew")
-				return s.continueAsNew(ctx)
+				if s.AgentCtl != nil && s.AgentCtl.HasActiveChildren() {
+					logger.Info("Idle timeout reached but active children exist, deferring CAN")
+				} else {
+					logger.Info("Idle timeout reached, triggering ContinueAsNew")
+					return s.continueAsNew(ctx)
+				}
 			}
+		}
+
+		// Handle manual compaction request (before shutdown/input checks)
+		if s.CompactRequested {
+			s.CompactRequested = false
+			logger.Info("Manual compaction requested via /compact")
+			if err := s.performCompaction(ctx); err != nil {
+				logger.Warn("Manual compaction failed", "error", err)
+			}
+			continue
 		}
 
 		// Check for shutdown
 		if s.ShutdownRequested {
 			logger.Info("Shutdown requested, completing workflow")
+			items, _ := s.History.GetRawItems()
 			return WorkflowResult{
 				ConversationID:    s.ConversationID,
 				TotalIterations:   s.IterationCount,
 				TotalTokens:       s.TotalTokens,
 				ToolCallsExecuted: s.ToolCallsExecuted,
 				EndReason:         "shutdown",
+				FinalMessage:      extractFinalMessage(items),
 			}, nil
 		}
 
@@ -418,6 +620,7 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context) (WorkflowResult, e
 		s.PendingUserInput = false
 		s.Interrupted = false
 		s.IterationCount = 0
+		s.Suggestion = ""
 
 		// Run the agentic turn
 		done, err := s.runAgenticTurn(ctx)
@@ -433,9 +636,17 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context) (WorkflowResult, e
 		// Accumulate iterations for CAN threshold across turns.
 		s.TotalIterationsForCAN += s.IterationCount
 		if s.TotalIterationsForCAN >= maxIterationsBeforeCAN {
-			logger.Info("Total iterations across turns reached CAN threshold",
-				"total", s.TotalIterationsForCAN)
-			return s.continueAsNew(ctx)
+			// Block ContinueAsNew if there are active child workflows.
+			// Re-attaching to child futures after CAN is complex, so we defer.
+			if s.AgentCtl != nil && s.AgentCtl.HasActiveChildren() {
+				logger.Info("Deferring ContinueAsNew: active child workflows",
+					"total", s.TotalIterationsForCAN)
+				s.TotalIterationsForCAN = maxIterationsBeforeCAN / 2
+			} else {
+				logger.Info("Total iterations across turns reached CAN threshold",
+					"total", s.TotalIterationsForCAN)
+				return s.continueAsNew(ctx)
+			}
 		}
 
 		// Turn complete — add TurnComplete marker (unless interrupted, which already added it)
@@ -448,6 +659,15 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context) (WorkflowResult, e
 
 		s.Phase = PhaseWaitingForInput
 		s.ToolsInFlight = nil
+
+		// Generate prompt suggestion asynchronously (best-effort).
+		// The CLI has already detected TurnComplete via polling and can show
+		// the input prompt immediately; the suggestion arrives ~300-500ms later.
+		if !s.Interrupted && !s.Config.DisableSuggestions {
+			s.Suggestion = ""
+			s.generateSuggestion(ctx)
+		}
+
 		logger.Info("Turn complete, waiting for next input", "turn_id", s.CurrentTurnID)
 	}
 }
@@ -639,21 +859,31 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 			}
 		}
 
-		// Intercept request_user_input calls — these are handled by the workflow,
-		// not dispatched as activities. Separate them from normal tool calls.
-		// Maps to: codex-rs/protocol/src/request_user_input.rs
-		hadUserInputCalls := false
+		// Intercept workflow-handled tool calls — these are NOT dispatched as
+		// activities. Includes: request_user_input, and all collab tools
+		// (spawn_agent, send_input, wait, close_agent, resume_agent).
+		// Maps to: codex-rs/protocol/src/request_user_input.rs, codex-rs/core/src/agent/collab.rs
+		hadInterceptedCalls := false
 		if len(functionCalls) > 0 {
 			var normalCalls []models.ConversationItem
 			for _, fc := range functionCalls {
 				if fc.Name == "request_user_input" {
-					hadUserInputCalls = true
+					hadInterceptedCalls = true
 					outputItem, err := s.handleRequestUserInput(ctx, fc)
 					if err != nil {
 						return false, err
 					}
 					if err := s.History.AddItem(outputItem); err != nil {
 						return false, fmt.Errorf("failed to add user input response: %w", err)
+					}
+				} else if isCollabToolCall(fc.Name) {
+					hadInterceptedCalls = true
+					outputItem, err := s.handleCollabToolCall(ctx, fc)
+					if err != nil {
+						return false, err
+					}
+					if err := s.History.AddItem(outputItem); err != nil {
+						return false, fmt.Errorf("failed to add collab tool response: %w", err)
 					}
 				} else {
 					normalCalls = append(normalCalls, fc)
@@ -662,10 +892,10 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 			functionCalls = normalCalls
 		}
 
-		// If only request_user_input calls were present (no normal tools),
-		// continue to next LLM iteration so it can use the user's answers.
-		if hadUserInputCalls && len(functionCalls) == 0 {
-			// Check for interrupt/shutdown after user input
+		// If only intercepted calls were present (no normal tools),
+		// continue to next LLM iteration so it can use the results.
+		if hadInterceptedCalls && len(functionCalls) == 0 {
+			// Check for interrupt/shutdown after intercepted calls
 			if s.Interrupted || s.ShutdownRequested {
 				return false, nil
 			}
@@ -850,6 +1080,97 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 	return false, nil
 }
 
+// generateSuggestion runs the GenerateSuggestions activity synchronously to
+// populate s.Suggestion. Called after TurnComplete marker is added but before
+// the next awaitWithIdleTimeout. The CLI has already seen the TurnComplete via
+// polling and can show the input prompt; the suggestion appears ~300-500ms later
+// when the CLI's delayed poll picks it up.
+//
+// Best-effort: errors are silently ignored.
+func (s *SessionState) generateSuggestion(ctx workflow.Context) {
+	input := s.buildSuggestionInput()
+	if input == nil {
+		return
+	}
+
+	suggCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 1, // No retries — best-effort
+		},
+	})
+
+	var out activities.SuggestionOutput
+	err := workflow.ExecuteActivity(suggCtx, "GenerateSuggestions", *input).Get(ctx, &out)
+	if err == nil && out.Suggestion != "" {
+		s.Suggestion = out.Suggestion
+	}
+}
+
+// buildSuggestionInput extracts the last user message, last assistant message,
+// and tool summaries from history to build SuggestionInput.
+// Returns nil if there's insufficient history for a meaningful suggestion.
+func (s *SessionState) buildSuggestionInput() *activities.SuggestionInput {
+	items, err := s.History.GetRawItems()
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+
+	var lastUserMsg, lastAssistantMsg string
+	var toolSummaries []string
+
+	// Walk backward through history to find the last messages
+	for i := len(items) - 1; i >= 0; i-- {
+		item := items[i]
+		switch item.Type {
+		case models.ItemTypeUserMessage:
+			if lastUserMsg == "" {
+				lastUserMsg = item.Content
+			}
+		case models.ItemTypeAssistantMessage:
+			if lastAssistantMsg == "" {
+				lastAssistantMsg = item.Content
+			}
+		case models.ItemTypeFunctionCallOutput:
+			if item.Output != nil {
+				success := item.Output.Success != nil && *item.Output.Success
+				toolSummaries = append(toolSummaries, instructions.FormatToolSummary(item.Name, success))
+			}
+		case models.ItemTypeFunctionCall:
+			toolSummaries = append(toolSummaries, item.Name)
+		case models.ItemTypeTurnStarted:
+			// Don't look past the current turn's start
+			if lastUserMsg != "" {
+				break
+			}
+		}
+		// Stop once we have both messages
+		if lastUserMsg != "" && lastAssistantMsg != "" {
+			break
+		}
+	}
+
+	if lastUserMsg == "" && lastAssistantMsg == "" {
+		return nil
+	}
+
+	// Pick cheap model based on provider
+	suggModel, suggProvider := instructions.SuggestionModelForProvider(s.Config.Model.Provider)
+
+	return &activities.SuggestionInput{
+		UserMessage:      lastUserMsg,
+		AssistantMessage: lastAssistantMsg,
+		ToolSummaries:    toolSummaries,
+		ModelConfig: models.ModelConfig{
+			Provider:      suggProvider,
+			Model:         suggModel,
+			Temperature:   0.3,
+			MaxTokens:     50,
+			ContextWindow: 4096,
+		},
+	}
+}
+
 // executeToolsInParallel runs all tool activities in parallel and waits for all.
 //
 // Each tool gets a per-activity StartToCloseTimeout derived from:
@@ -956,6 +1277,17 @@ func buildToolSpecs(config models.ToolsConfig) []tools.ToolSpec {
 
 	// request_user_input is always available (intercepted by workflow, not dispatched)
 	specs = append(specs, tools.NewRequestUserInputToolSpec())
+
+	// Collaboration tools for subagent orchestration (intercepted by workflow)
+	if config.EnableCollab {
+		specs = append(specs,
+			tools.NewSpawnAgentToolSpec(),
+			tools.NewSendInputToolSpec(),
+			tools.NewWaitToolSpec(),
+			tools.NewCloseAgentToolSpec(),
+			tools.NewResumeAgentToolSpec(),
+		)
+	}
 
 	return specs
 }
@@ -1237,6 +1569,11 @@ func evaluateToolApproval(
 	policyMgr *execpolicy.ExecPolicyManager,
 	mode models.ApprovalMode,
 ) (tools.ExecApprovalRequirement, string) {
+	// Collab tools are workflow-intercepted and always safe
+	if isCollabToolCall(toolName) {
+		return tools.ApprovalSkip, ""
+	}
+
 	switch toolName {
 	case "read_file", "list_dir", "grep_files", "request_user_input":
 		return tools.ApprovalSkip, "" // Read-only / workflow-intercepted tools always safe

@@ -1,4 +1,4 @@
-// Package cli implements the interactive REPL for codex-temporal-go.
+// Package cli implements the interactive REPL for temporal-agent-harness.
 package cli
 
 import (
@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/glamour"
 	gansi "github.com/charmbracelet/glamour/ansi"
 	glamourstyles "github.com/charmbracelet/glamour/styles"
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 	"golang.org/x/term"
 )
 
@@ -175,19 +175,32 @@ func (r *ItemRenderer) RenderFunctionCallOutput(item models.ConversationItem) st
 	return b.String()
 }
 
+// renderApprovalEntry writes a single tool entry (title + optional preview box + reason)
+// into the provided builder.
+func (r *ItemRenderer) renderApprovalEntry(b *strings.Builder, index int, info approvalInfo, reason string) {
+	idx := r.styles.ApprovalIndex.Render(fmt.Sprintf("[%d]", index))
+	title := r.styles.ApprovalTool.Render(info.Title)
+	b.WriteString(fmt.Sprintf("  %s %s\n", idx, title))
+	if len(info.Preview) > 0 {
+		b.WriteString("      " + r.styles.OutputPrefix.Render("╭─") + "\n")
+		for _, line := range info.Preview {
+			b.WriteString("      " + r.styles.OutputPrefix.Render("│") + " " + r.styles.OutputDim.Render(line) + "\n")
+		}
+		b.WriteString("      " + r.styles.OutputPrefix.Render("╰─") + "\n")
+	}
+	if reason != "" {
+		reasonStr := r.styles.ApprovalReason.Render("Reason:") + " " + reason
+		b.WriteString(fmt.Sprintf("      %s\n", reasonStr))
+	}
+}
+
 // RenderApprovalPrompt renders the approval prompt for pending tool calls.
 func (r *ItemRenderer) RenderApprovalPrompt(approvals []workflow.PendingApproval) string {
 	var b strings.Builder
 	b.WriteString("\n")
 	for i, ap := range approvals {
-		idx := r.styles.ApprovalIndex.Render(fmt.Sprintf("[%d]", i+1))
-		tool := r.styles.ApprovalTool.Render("Tool:") + " " + ap.ToolName
-		b.WriteString(fmt.Sprintf("  %s %s\n", idx, tool))
-		b.WriteString(fmt.Sprintf("      %s\n", formatApprovalDetail(ap.ToolName, ap.Arguments)))
-		if ap.Reason != "" {
-			reason := r.styles.ApprovalReason.Render("Reason:") + " " + ap.Reason
-			b.WriteString(fmt.Sprintf("      %s\n", reason))
-		}
+		info := formatApprovalInfo(ap.ToolName, ap.Arguments)
+		r.renderApprovalEntry(&b, i+1, info, ap.Reason)
 		b.WriteString("\n")
 	}
 	if len(approvals) > 1 {
@@ -204,10 +217,8 @@ func (r *ItemRenderer) RenderEscalationPrompt(escalations []workflow.EscalationR
 	b.WriteString("\n")
 	b.WriteString(r.styles.EscalationHeader.Render("Sandbox failure — escalation needed:") + "\n\n")
 	for i, esc := range escalations {
-		idx := r.styles.ApprovalIndex.Render(fmt.Sprintf("[%d]", i+1))
-		tool := r.styles.ApprovalTool.Render("Tool:") + " " + esc.ToolName
-		b.WriteString(fmt.Sprintf("  %s %s\n", idx, tool))
-		b.WriteString(fmt.Sprintf("      %s\n", formatApprovalDetail(esc.ToolName, esc.Arguments)))
+		info := formatApprovalInfo(esc.ToolName, esc.Arguments)
+		r.renderApprovalEntry(&b, i+1, info, "")
 		if esc.Output != "" {
 			outputPreview := esc.Output
 			if len(outputPreview) > 200 {
@@ -255,14 +266,8 @@ func (r *ItemRenderer) RenderApprovalContext(approvals []workflow.PendingApprova
 	var b strings.Builder
 	b.WriteString("\n")
 	for i, ap := range approvals {
-		idx := r.styles.ApprovalIndex.Render(fmt.Sprintf("[%d]", i+1))
-		tool := r.styles.ApprovalTool.Render("Tool:") + " " + ap.ToolName
-		b.WriteString(fmt.Sprintf("  %s %s\n", idx, tool))
-		b.WriteString(fmt.Sprintf("      %s\n", formatApprovalDetail(ap.ToolName, ap.Arguments)))
-		if ap.Reason != "" {
-			reason := r.styles.ApprovalReason.Render("Reason:") + " " + ap.Reason
-			b.WriteString(fmt.Sprintf("      %s\n", reason))
-		}
+		info := formatApprovalInfo(ap.ToolName, ap.Arguments)
+		r.renderApprovalEntry(&b, i+1, info, ap.Reason)
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -275,10 +280,8 @@ func (r *ItemRenderer) RenderEscalationContext(escalations []workflow.Escalation
 	b.WriteString("\n")
 	b.WriteString(r.styles.EscalationHeader.Render("Sandbox failure — escalation needed:") + "\n\n")
 	for i, esc := range escalations {
-		idx := r.styles.ApprovalIndex.Render(fmt.Sprintf("[%d]", i+1))
-		tool := r.styles.ApprovalTool.Render("Tool:") + " " + esc.ToolName
-		b.WriteString(fmt.Sprintf("  %s %s\n", idx, tool))
-		b.WriteString(fmt.Sprintf("      %s\n", formatApprovalDetail(esc.ToolName, esc.Arguments)))
+		info := formatApprovalInfo(esc.ToolName, esc.Arguments)
+		r.renderApprovalEntry(&b, i+1, info, "")
 		if esc.Output != "" {
 			outputPreview := esc.Output
 			if len(outputPreview) > 200 {

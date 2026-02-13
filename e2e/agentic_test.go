@@ -1,4 +1,4 @@
-// E2E tests for codex-temporal-go
+// E2E tests for temporal-agent-harness
 //
 // These tests are self-contained: TestMain starts a Temporal dev server on a
 // non-standard port (17233) and an in-process worker. No external services
@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,16 +25,16 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/mfateev/codex-temporal-go/internal/activities"
-	"github.com/mfateev/codex-temporal-go/internal/llm"
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
-	"github.com/mfateev/codex-temporal-go/internal/tools/handlers"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/activities"
+	"github.com/mfateev/temporal-agent-harness/internal/llm"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/tools/handlers"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 const (
-	TaskQueue       = "codex-temporal"
+	TaskQueue       = "temporal-agent-harness"
 	TestHostPort    = "localhost:17233" // Non-standard port to avoid collisions
 	TestUIPort      = "17234"          // UI port (also non-standard)
 	WorkflowTimeout = 3 * time.Minute
@@ -104,6 +105,11 @@ func TestMain(m *testing.M) {
 	// 6. Run tests
 	code := m.Run()
 
+	// 6b. Write E2E passed marker on success
+	if code == 0 {
+		writeE2EPassedMarker()
+	}
+
 	// 7. Tear down
 	log.Println("E2E: Tearing down...")
 	testWorker.Stop()
@@ -130,6 +136,31 @@ func findTemporalBin() string {
 		return p
 	}
 	return ""
+}
+
+// writeE2EPassedMarker writes the current HEAD SHA to <repo-root>/.e2e-passed
+// so that the e2e-test-gate hook can verify tests passed for this commit.
+func writeE2EPassedMarker() {
+	rootOut, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		log.Printf("E2E: Failed to find repo root for marker: %v", err)
+		return
+	}
+	root := strings.TrimSpace(string(rootOut))
+
+	shaOut, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		log.Printf("E2E: Failed to get HEAD SHA for marker: %v", err)
+		return
+	}
+	sha := strings.TrimSpace(string(shaOut))
+
+	markerPath := filepath.Join(root, ".e2e-passed")
+	if err := os.WriteFile(markerPath, []byte(sha+"\n"), 0644); err != nil {
+		log.Printf("E2E: Failed to write marker %s: %v", markerPath, err)
+		return
+	}
+	log.Printf("E2E: Wrote passed marker to %s (SHA: %s)", markerPath, sha)
 }
 
 // waitForPort polls a TCP port until it accepts connections or the timeout expires.
@@ -176,6 +207,7 @@ func createWorker(c client.Client) worker.Worker {
 	llmActivities := activities.NewLLMActivities(llmClient)
 	w.RegisterActivity(llmActivities.ExecuteLLMCall)
 	w.RegisterActivity(llmActivities.ExecuteCompact)
+	w.RegisterActivity(llmActivities.GenerateSuggestions)
 
 	toolActivities := activities.NewToolActivities(toolRegistry)
 	w.RegisterActivity(toolActivities.ExecuteTool)
@@ -190,7 +222,9 @@ func createWorker(c client.Client) worker.Worker {
 // --- Test helpers ---
 
 // testSessionConfig returns a deterministic session configuration for testing.
-// Temperature 0 makes LLM responses reproducible.
+// Temperature 0 makes LLM responses reproducible. Suggestions are disabled by
+// default to avoid extra API calls; tests that exercise suggestions should
+// override DisableSuggestions.
 func testSessionConfig(maxTokens int, tools models.ToolsConfig) models.SessionConfiguration {
 	return models.SessionConfiguration{
 		Model: models.ModelConfig{
@@ -199,7 +233,8 @@ func testSessionConfig(maxTokens int, tools models.ToolsConfig) models.SessionCo
 			MaxTokens:     maxTokens,
 			ContextWindow: 128000,
 		},
-		Tools: tools,
+		Tools:              tools,
+		DisableSuggestions: true,
 	}
 }
 
@@ -972,4 +1007,511 @@ func TestAgenticWorkflow_ProactiveCompaction(t *testing.T) {
 	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
 
 	t.Logf("Compaction test - Total tokens: %d, History items: %d", result.TotalTokens, len(items))
+}
+
+// TestAgenticWorkflow_ManualCompact verifies the /compact command flow end-to-end.
+// Steps:
+//  1. Start a conversation and wait for the first turn to complete.
+//  2. Send UpdateCompact to trigger manual compaction.
+//  3. Wait for compaction marker to appear in history.
+//  4. Send another user message to verify the workflow resumes normally.
+//  5. Shutdown and verify result.
+func TestAgenticWorkflow_ManualCompact(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-manual-compact-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		// Generate enough content for compaction to have something to work with.
+		UserMessage: "Write a short paragraph (at least 100 words) about the importance of testing software. Do not use any tools.",
+		Config: testSessionConfig(1000, models.ToolsConfig{
+			EnableShell:    false,
+			EnableReadFile: false,
+		}),
+	}
+
+	t.Logf("Starting manual compaction test: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+
+	// 1. Wait for the first turn to complete
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+	t.Log("Turn 1 complete")
+
+	// 2. Send UpdateCompact
+	updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   workflowID,
+		UpdateName:   workflow.UpdateCompact,
+		Args:         []interface{}{workflow.CompactRequest{}},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	require.NoError(t, err, "Failed to send compact update")
+
+	var compactResp workflow.CompactResponse
+	require.NoError(t, updateHandle.Get(ctx, &compactResp))
+	assert.True(t, compactResp.Acknowledged, "Compact should be acknowledged")
+	t.Log("Compact update acknowledged")
+
+	// 3. Wait for compaction marker in history
+	deadline := time.After(time.Minute)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var items []models.ConversationItem
+	compactionFound := false
+	for !compactionFound {
+		select {
+		case <-deadline:
+			t.Fatal("Timed out waiting for compaction marker")
+		case <-ctx.Done():
+			t.Fatal("Context cancelled")
+		case <-ticker.C:
+			resp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetConversationItems)
+			if err != nil {
+				continue
+			}
+			if err := resp.Get(&items); err != nil {
+				continue
+			}
+			for _, item := range items {
+				if item.Type == models.ItemTypeCompaction {
+					compactionFound = true
+					t.Logf("Found compaction marker: %q", item.Content[:min(50, len(item.Content))])
+					break
+				}
+			}
+		}
+	}
+
+	// 4. Send another user message to verify workflow resumes
+	updateHandle2, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   workflowID,
+		UpdateName:   workflow.UpdateUserInput,
+		Args:         []interface{}{workflow.UserInput{Content: "What is 2+2? Answer with just the number."}},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	require.NoError(t, err, "Failed to send second user input")
+
+	var accepted workflow.UserInputAccepted
+	require.NoError(t, updateHandle2.Get(ctx, &accepted))
+	t.Logf("Second input accepted, turn ID: %s", accepted.TurnID)
+
+	// Wait for the post-compaction turn to complete.
+	// After compaction ReplaceAll, old TurnComplete markers are gone, so look
+	// for at least 1 TurnComplete in the compacted history.
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+
+	// 5. Shutdown and verify
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+	assert.Equal(t, "shutdown", result.EndReason)
+	assert.Greater(t, result.TotalTokens, 0)
+
+	t.Logf("Manual compact test - Total tokens: %d", result.TotalTokens)
+}
+
+// TestAgenticWorkflow_SpawnAndWait tests the subagent collaboration flow:
+// Parent spawns an explorer child to answer a question, waits for completion,
+// and reports the result. Verifies child workflow appears and results flow back.
+func TestAgenticWorkflow_SpawnAndWait(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-spawn-wait-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage: "You have access to agent collaboration tools. " +
+			"Use spawn_agent to spawn an explorer agent with the message 'What is 2+2? Answer with just the number.' " +
+			"Then use the wait tool to wait for the agent to complete. " +
+			"Finally, report what the agent returned.",
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Model:         CheapModel,
+				Temperature:   0,
+				MaxTokens:     1000,
+				ContextWindow: 128000,
+			},
+			Tools: models.ToolsConfig{
+				EnableShell:    false,
+				EnableReadFile: false,
+				EnableCollab:   true,
+			},
+		},
+	}
+
+	t.Logf("Starting spawn-and-wait workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+
+	assert.Equal(t, workflowID, result.ConversationID)
+	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
+	assert.Equal(t, "shutdown", result.EndReason)
+
+	// Query history and look for spawn_agent and wait tool calls
+	resp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetConversationItems)
+	require.NoError(t, err)
+	var items []models.ConversationItem
+	require.NoError(t, resp.Get(&items))
+
+	hasSpawnCall := false
+	hasWaitCall := false
+	for _, item := range items {
+		if item.Type == models.ItemTypeFunctionCall {
+			t.Logf("Tool call: %s (call_id: %s)", item.Name, item.CallID)
+			if item.Name == "spawn_agent" {
+				hasSpawnCall = true
+			}
+			if item.Name == "wait" {
+				hasWaitCall = true
+			}
+		}
+		if item.Type == models.ItemTypeFunctionCallOutput {
+			t.Logf("Tool output (call_id: %s): %s", item.CallID, truncateStr(item.Output.Content, 200))
+		}
+	}
+
+	assert.True(t, hasSpawnCall, "LLM should have called spawn_agent")
+	// wait is optional — the LLM may or may not call it depending on how it interprets the results
+
+	t.Logf("Spawn-and-wait test - Total tokens: %d, spawn_agent: %v, wait: %v",
+		result.TotalTokens, hasSpawnCall, hasWaitCall)
+}
+
+// TestAgenticWorkflow_PlanMode tests the plan_request Update:
+// 1. Start a parent workflow
+// 2. Send plan_request Update to spawn a planner child
+// 3. Interact with the planner child directly via user_input and get_conversation_items
+// 4. Shutdown the planner child
+// 5. Verify the plan text flows back from the child
+func TestAgenticWorkflow_PlanMode(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-plan-mode-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage:    "Say hello and wait for further instructions.",
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Model:         CheapModel,
+				Temperature:   0,
+				MaxTokens:     500,
+				ContextWindow: 128000,
+			},
+			Tools: models.ToolsConfig{
+				EnableShell:    true,
+				EnableReadFile: true,
+				EnableCollab:   true,
+			},
+		},
+	}
+
+	t.Logf("Starting plan mode test workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	// 1. Start parent workflow and wait for initial turn
+	startWorkflow(t, ctx, c, input)
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+	t.Log("Parent initial turn complete")
+
+	// 2. Send plan_request to spawn planner child
+	updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   workflowID,
+		UpdateName:   workflow.UpdatePlanRequest,
+		Args:         []interface{}{workflow.PlanRequest{Message: "What is 2+2? Answer with just the number."}},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	require.NoError(t, err, "Failed to send plan_request")
+
+	var accepted workflow.PlanRequestAccepted
+	require.NoError(t, updateHandle.Get(ctx, &accepted))
+	assert.NotEmpty(t, accepted.AgentID, "agent ID should be set")
+	assert.NotEmpty(t, accepted.WorkflowID, "workflow ID should be set")
+	t.Logf("Planner child spawned: agent_id=%s, workflow_id=%s", accepted.AgentID, accepted.WorkflowID)
+
+	// 3. Wait for planner child to complete its turn
+	childWfID := accepted.WorkflowID
+	waitForTurnComplete(t, ctx, c, childWfID, 1)
+	t.Log("Planner child turn complete")
+
+	// 4. Query planner child's conversation items directly
+	resp, err := c.QueryWorkflow(ctx, childWfID, "", workflow.QueryGetConversationItems)
+	require.NoError(t, err)
+	var childItems []models.ConversationItem
+	require.NoError(t, resp.Get(&childItems))
+	t.Logf("Planner child has %d conversation items", len(childItems))
+
+	// Verify planner has assistant response
+	hasAssistant := false
+	for _, item := range childItems {
+		if item.Type == models.ItemTypeAssistantMessage && item.Content != "" {
+			t.Logf("Planner response: %s", truncateStr(item.Content, 200))
+			hasAssistant = true
+		}
+	}
+	assert.True(t, hasAssistant, "Planner should have an assistant response")
+
+	// 5. Verify parent's turn_status shows the planner child
+	statusResp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetTurnStatus)
+	require.NoError(t, err)
+	var status workflow.TurnStatus
+	require.NoError(t, statusResp.Get(&status))
+	assert.NotEmpty(t, status.ChildAgents, "Parent should report child agents")
+	if len(status.ChildAgents) > 0 {
+		found := false
+		for _, child := range status.ChildAgents {
+			if child.Role == workflow.AgentRolePlanner {
+				found = true
+				t.Logf("Parent sees planner child: agent_id=%s, status=%s", child.AgentID, child.Status)
+			}
+		}
+		assert.True(t, found, "Parent should have a planner child")
+	}
+
+	// 6. Shutdown planner child directly
+	childShutdownHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   childWfID,
+		UpdateName:   workflow.UpdateShutdown,
+		Args:         []interface{}{workflow.ShutdownRequest{}},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	require.NoError(t, err, "Failed to shutdown planner child")
+	var childShutdownResp workflow.ShutdownResponse
+	require.NoError(t, childShutdownHandle.Get(ctx, &childShutdownResp))
+	assert.True(t, childShutdownResp.Acknowledged)
+	t.Log("Planner child shutdown acknowledged")
+
+	// Wait for planner child workflow to complete
+	childRun := c.GetWorkflow(ctx, childWfID, "")
+	var childResult workflow.WorkflowResult
+	require.NoError(t, childRun.Get(ctx, &childResult), "Planner child should complete")
+	assert.Equal(t, "shutdown", childResult.EndReason)
+	assert.NotEmpty(t, childResult.FinalMessage, "Planner should have a final message")
+	t.Logf("Planner final message: %s", truncateStr(childResult.FinalMessage, 200))
+
+	// 7. Shutdown parent
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+	assert.Equal(t, "shutdown", result.EndReason)
+	t.Logf("Plan mode test complete. Parent tokens: %d", result.TotalTokens)
+}
+
+// TestAgenticWorkflow_PromptSuggestion tests that after a turn completes,
+// the GenerateSuggestions activity runs and produces a suggestion visible
+// via the get_turn_status query.
+func TestAgenticWorkflow_PromptSuggestion(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-suggestion-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage:    "Write a Go function that adds two numbers. Do not use any tools.",
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Model:         CheapModel,
+				Temperature:   0,
+				MaxTokens:     500,
+				ContextWindow: 128000,
+			},
+			Tools: models.ToolsConfig{
+				EnableShell:    false,
+				EnableReadFile: false,
+			},
+			DisableSuggestions: false, // Enable suggestions for this test
+		},
+	}
+
+	t.Logf("Starting suggestion test workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+
+	// Wait for the turn to complete
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+
+	// Poll for suggestion to appear (it's async, may take ~300-500ms after turn complete)
+	var suggestion string
+	deadline := time.After(30 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for suggestion == "" {
+		select {
+		case <-deadline:
+			t.Log("Suggestion not available after 30s (this is acceptable — LLM may return NONE)")
+			goto done
+		case <-ctx.Done():
+			t.Fatal("Context cancelled waiting for suggestion")
+		case <-ticker.C:
+			resp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetTurnStatus)
+			if err != nil {
+				continue
+			}
+			var status workflow.TurnStatus
+			if err := resp.Get(&status); err != nil {
+				continue
+			}
+			if status.Suggestion != "" {
+				suggestion = status.Suggestion
+				t.Logf("Got suggestion: %q", suggestion)
+			}
+		}
+	}
+
+done:
+	// The suggestion may be empty if the LLM returned NONE — that's valid.
+	// What we verify is that the workflow didn't fail and the field exists.
+	t.Logf("Suggestion result: %q (empty is valid if LLM returned NONE)", suggestion)
+
+	// If we got a suggestion, verify it's reasonable (short, single line)
+	if suggestion != "" {
+		assert.False(t, strings.Contains(suggestion, "\n"), "Suggestion should be single line")
+		assert.LessOrEqual(t, len(suggestion), 100, "Suggestion should be concise")
+	}
+
+	// Shutdown and verify workflow completed normally
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+	assert.Equal(t, "shutdown", result.EndReason)
+	assert.Greater(t, result.TotalTokens, 0)
+
+	t.Logf("Suggestion test - Total tokens: %d", result.TotalTokens)
+}
+
+// TestAgenticWorkflow_SuggestionDisabledE2E tests that with DisableSuggestions=true,
+// no suggestion appears after turn completion.
+func TestAgenticWorkflow_SuggestionDisabledE2E(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-no-suggestion-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage:    "Say hello in exactly 3 words. Do not use any tools.",
+		Config: testSessionConfig(100, models.ToolsConfig{
+			EnableShell:    false,
+			EnableReadFile: false,
+		}),
+		// testSessionConfig already sets DisableSuggestions: true
+	}
+
+	t.Logf("Starting no-suggestion test workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+
+	// Wait a moment for any async suggestion to arrive (it shouldn't)
+	time.Sleep(2 * time.Second)
+
+	// Query turn status — suggestion should be empty
+	resp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetTurnStatus)
+	require.NoError(t, err)
+	var status workflow.TurnStatus
+	require.NoError(t, resp.Get(&status))
+
+	assert.Equal(t, "", status.Suggestion, "Suggestion should be empty when disabled")
+
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+	assert.Equal(t, "shutdown", result.EndReason)
+
+	t.Logf("No-suggestion test - Total tokens: %d", result.TotalTokens)
+}
+
+// TestFetchAvailableModels_E2E verifies that FetchAvailableModels returns real
+// models from the provider APIs. It checks:
+// - At least one model is returned from each configured provider
+// - Results are sorted (anthropic before openai)
+// - Anthropic models have DisplayName set
+// - OpenAI models are filtered to chat-capable models only
+func TestFetchAvailableModels_E2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping E2E test in short mode")
+	}
+
+	hasOpenAI := os.Getenv("OPENAI_API_KEY") != ""
+	hasAnthropic := os.Getenv("ANTHROPIC_API_KEY") != ""
+	if !hasOpenAI && !hasAnthropic {
+		t.Skip("No LLM provider key set, skipping")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	models, err := llm.FetchAvailableModels(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, models, "Should return models when at least one API key is set")
+	require.NotEmpty(t, models, "Should return at least one model")
+
+	t.Logf("Fetched %d models total", len(models))
+
+	// Collect provider stats
+	providerCounts := map[string]int{}
+	for _, m := range models {
+		providerCounts[m.Provider]++
+		t.Logf("  %s: %s (display: %q)", m.Provider, m.ID, m.DisplayName)
+	}
+
+	if hasOpenAI {
+		assert.Greater(t, providerCounts["openai"], 0, "Should have OpenAI models when OPENAI_API_KEY is set")
+		// The filter should produce a concise list (no date snapshots, no specialized variants)
+		assert.Less(t, providerCounts["openai"], 40, "Filter should keep list concise (<40 OpenAI models)")
+		for _, m := range models {
+			if m.Provider == "openai" {
+				// Capability exclusions
+				assert.NotContains(t, m.ID, "embedding", "Should not include embedding models")
+				assert.NotContains(t, m.ID, "-tts", "Should not include TTS models")
+				assert.NotContains(t, m.ID, "-realtime", "Should not include realtime models")
+				assert.NotContains(t, m.ID, "-transcribe", "Should not include transcription models")
+				assert.NotContains(t, m.ID, "-instruct", "Should not include instruct models")
+				assert.False(t, strings.HasPrefix(m.ID, "ft:"), "Should not include fine-tuned models")
+				assert.False(t, strings.HasPrefix(m.ID, "gpt-image"), "Should not include gpt-image models")
+				// Noise exclusions
+				assert.NotContains(t, m.ID, "-preview", "Should not include preview models")
+				assert.NotContains(t, m.ID, "-search", "Should not include search models")
+				assert.NotContains(t, m.ID, "-deep-research", "Should not include deep-research models")
+				assert.NotContains(t, m.ID, "-chat-latest", "Should not include chat-latest aliases")
+			}
+		}
+	}
+
+	if hasAnthropic {
+		assert.Greater(t, providerCounts["anthropic"], 0, "Should have Anthropic models when ANTHROPIC_API_KEY is set")
+		// Verify Anthropic models have display names
+		for _, m := range models {
+			if m.Provider == "anthropic" {
+				assert.NotEmpty(t, m.DisplayName, "Anthropic models should have DisplayName: %s", m.ID)
+			}
+		}
+	}
+
+	// Verify sort order: anthropic before openai
+	if hasOpenAI && hasAnthropic {
+		seenOpenAI := false
+		for _, m := range models {
+			if m.Provider == "openai" {
+				seenOpenAI = true
+			}
+			if m.Provider == "anthropic" && seenOpenAI {
+				t.Error("Anthropic model found after OpenAI model — sort order is wrong")
+				break
+			}
+		}
+	}
+}
+
+// truncateStr truncates a string to n characters with "..." appended.
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

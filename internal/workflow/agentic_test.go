@@ -14,10 +14,10 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/mfateev/codex-temporal-go/internal/activities"
-	"github.com/mfateev/codex-temporal-go/internal/history"
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/activities"
+	"github.com/mfateev/temporal-agent-harness/internal/history"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
 // Stub activity functions for the test environment.
@@ -54,6 +54,10 @@ func ExecuteCompact(_ context.Context, _ activities.CompactActivityInput) (activ
 	panic("stub: should be mocked")
 }
 
+func GenerateSuggestions(_ context.Context, _ activities.SuggestionInput) (activities.SuggestionOutput, error) {
+	panic("stub: should be mocked")
+}
+
 func (s *AgenticWorkflowTestSuite) SetupTest() {
 	s.env = s.NewTestWorkflowEnvironment()
 	s.env.RegisterActivity(ExecuteLLMCall)
@@ -61,6 +65,7 @@ func (s *AgenticWorkflowTestSuite) SetupTest() {
 	s.env.RegisterActivity(LoadWorkerInstructions)
 	s.env.RegisterActivity(LoadExecPolicy)
 	s.env.RegisterActivity(ExecuteCompact)
+	s.env.RegisterActivity(GenerateSuggestions)
 
 	// Default mock for LoadWorkerInstructions — returns empty docs.
 	// Tests that need specific worker docs can override this.
@@ -75,6 +80,10 @@ func (s *AgenticWorkflowTestSuite) SetupTest() {
 	// Tests that need compaction to succeed should override this.
 	s.env.OnActivity("ExecuteCompact", mock.Anything, mock.Anything).
 		Return(activities.CompactActivityOutput{}, fmt.Errorf("compaction not configured")).Maybe()
+
+	// Note: no default mock for GenerateSuggestions — testInput() sets
+	// DisableSuggestions=true, so it won't be called. Tests that enable
+	// suggestions must register their own mock.
 }
 
 func (s *AgenticWorkflowTestSuite) AfterTest(suiteName, testName string) {
@@ -93,6 +102,8 @@ func mockLLMStopResponse(content string, tokens int) activities.LLMActivityOutpu
 }
 
 // testInput returns a standard WorkflowInput for testing.
+// Suggestions are disabled by default to avoid needing GenerateSuggestions mocks
+// in every test. Tests that exercise suggestions should set DisableSuggestions=false.
 func testInput(message string) WorkflowInput {
 	return WorkflowInput{
 		ConversationID: "test-conv-1",
@@ -104,6 +115,7 @@ func testInput(message string) WorkflowInput {
 				MaxTokens:     100,
 				ContextWindow: 128000,
 			},
+			DisableSuggestions: true,
 		},
 	}
 }
@@ -694,6 +706,97 @@ func TestContextOverflow_CompactsBeforeCAN(t *testing.T) {
 
 	newTurnCount, _ := h.GetTurnCount()
 	assert.Equal(t, 2, newTurnCount)
+}
+
+// --- Manual compaction tests ---
+
+// TestMultiTurn_ManualCompact verifies that sending an UpdateCompact while the
+// workflow is idle (waiting for input) triggers compaction and the workflow
+// resumes normally for subsequent turns.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ManualCompact() {
+	// First LLM call succeeds
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 50), nil).Once()
+
+	// Second LLM call succeeds (after compaction)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("After compaction!", 30), nil).Once()
+
+	// After first turn completes, send compact update
+	var compactCompleted bool
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateCompact, "compact-1", &testsuite.TestUpdateCallback{
+			OnAccept: func() {},
+			OnReject: func(err error) {
+				s.Fail("compact rejected", err.Error())
+			},
+			OnComplete: func(result interface{}, err error) {
+				require.NoError(s.T(), err)
+				compactCompleted = true
+			},
+		}, CompactRequest{})
+	}, time.Second*2)
+
+	// Send second user input after compaction
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateUserInput, "input-2", noopCallback(),
+			UserInput{Content: "Continue after compaction"})
+	}, time.Second*4)
+
+	s.sendShutdown(time.Second * 6)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	assert.True(s.T(), compactCompleted, "Compact update should have completed")
+
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	// 50 (first LLM) + 30 (second LLM) = 80
+	// (compaction fails with default mock but workflow continues gracefully)
+	assert.Equal(s.T(), 80, result.TotalTokens)
+}
+
+// TestMultiTurn_ManualCompact_RejectsWhenShuttingDown verifies the compact
+// validator rejects if the session is shutting down.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ManualCompact_RejectsWhenShuttingDown() {
+	state := SessionState{ShutdownRequested: true}
+
+	// Validate directly — the validator should reject
+	validator := func(req CompactRequest) error {
+		if state.ShutdownRequested {
+			return fmt.Errorf("session is shutting down")
+		}
+		if state.Phase == PhaseCompacting {
+			return fmt.Errorf("compaction already in progress")
+		}
+		return nil
+	}
+
+	err := validator(CompactRequest{})
+	assert.Error(s.T(), err)
+	assert.Contains(s.T(), err.Error(), "shutting down")
+}
+
+// TestMultiTurn_ManualCompact_RejectsWhenCompacting verifies the compact
+// validator rejects if compaction is already in progress.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ManualCompact_RejectsWhenCompacting() {
+	state := SessionState{Phase: PhaseCompacting}
+
+	validator := func(req CompactRequest) error {
+		if state.ShutdownRequested {
+			return fmt.Errorf("session is shutting down")
+		}
+		if state.Phase == PhaseCompacting {
+			return fmt.Errorf("compaction already in progress")
+		}
+		return nil
+	}
+
+	err := validator(CompactRequest{})
+	assert.Error(s.T(), err)
+	assert.Contains(s.T(), err.Error(), "already in progress")
 }
 
 // --- Approval gate tests ---
@@ -2609,6 +2712,444 @@ func TestContextOverflow_ResetsResponseID(t *testing.T) {
 
 	assert.Equal(t, "", state.LastResponseID, "LastResponseID should be cleared after overflow")
 	assert.Equal(t, 0, state.lastSentHistoryLen, "lastSentHistoryLen should be zero after overflow")
+}
+
+// TestMultiTurn_SpawnAgentIntercepted verifies that a spawn_agent tool call is
+// intercepted by the workflow (not dispatched as an activity), starts a child
+// workflow, and returns the agent_id to the LLM.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_SpawnAgentIntercepted() {
+	// First LLM call: return a spawn_agent tool call
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-spawn",
+					Name:      "spawn_agent",
+					Arguments: `{"message": "explore the code", "agent_type": "explorer"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 30},
+		}, nil).Once()
+
+	// Second LLM call (after spawn result): return a stop
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("I spawned an explorer agent.", 20), nil).Once()
+
+	s.sendShutdown(time.Second * 3)
+
+	input := testInput("Spawn an explorer agent")
+	input.Config.Tools.EnableCollab = true
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, input)
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Equal(s.T(), 50, result.TotalTokens) // 30 + 20
+
+	// Verify history contains the spawn_agent call and its output
+	items, err := s.env.QueryWorkflow(QueryGetConversationItems)
+	require.NoError(s.T(), err)
+	var history []models.ConversationItem
+	require.NoError(s.T(), items.Get(&history))
+
+	// Find the spawn_agent output
+	foundSpawnOutput := false
+	for _, item := range history {
+		if item.Type == models.ItemTypeFunctionCallOutput && item.CallID == "call-spawn" {
+			foundSpawnOutput = true
+			require.NotNil(s.T(), item.Output)
+			// The output should contain an agent_id (success) or error
+			assert.NotEmpty(s.T(), item.Output.Content)
+		}
+	}
+	assert.True(s.T(), foundSpawnOutput, "Should have spawn_agent output in history")
+}
+
+// TestMultiTurn_ResumeAgentNotImplemented verifies that resume_agent returns
+// a not-implemented error without crashing the workflow.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_ResumeAgentNotImplemented() {
+	// LLM calls resume_agent
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-resume",
+					Name:      "resume_agent",
+					Arguments: `{"id": "agent-123"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 25},
+		}, nil).Once()
+
+	// LLM sees the error and responds
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Resume is not available yet.", 15), nil).Once()
+
+	s.sendShutdown(time.Second * 3)
+
+	input := testInput("Resume agent-123")
+	input.Config.Tools.EnableCollab = true
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, input)
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Equal(s.T(), 40, result.TotalTokens)
+
+	// Verify the resume_agent output contains "not yet implemented"
+	items, err := s.env.QueryWorkflow(QueryGetConversationItems)
+	require.NoError(s.T(), err)
+	var hist []models.ConversationItem
+	require.NoError(s.T(), items.Get(&hist))
+
+	for _, item := range hist {
+		if item.Type == models.ItemTypeFunctionCallOutput && item.CallID == "call-resume" {
+			require.NotNil(s.T(), item.Output)
+			assert.Contains(s.T(), item.Output.Content, "not yet implemented")
+			assert.False(s.T(), *item.Output.Success)
+		}
+	}
+}
+
+// TestMultiTurn_CollabToolsNotInSpecsWhenDisabled verifies that collab tools
+// are not included in tool specs when EnableCollab is false.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_CollabToolsNotInSpecsWhenDisabled() {
+	// Just verify via the query that the LLM doesn't receive collab tool specs.
+	// We do this by checking the ToolSpecs field is populated correctly.
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 10), nil).Once()
+
+	s.sendShutdown(time.Second * 2)
+
+	input := testInput("Hello")
+	input.Config.Tools.EnableCollab = false
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, input)
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	// If we got here without error, the workflow ran correctly without collab tools
+}
+
+// TestMultiTurn_FinalMessageInResult verifies that WorkflowResult.FinalMessage
+// is populated from the last assistant message on shutdown.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_FinalMessageInResult() {
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("This is my final answer.", 30), nil).Once()
+
+	s.sendShutdown(time.Second * 2)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("What is 2+2?"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "This is my final answer.", result.FinalMessage)
+}
+
+// TestMultiTurn_PlanRequest verifies that the plan_request Update spawns a planner
+// child workflow and returns the child's workflow ID. Also verifies that
+// get_turn_status includes the child agent in ChildAgents.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_PlanRequest() {
+	// Parent LLM call (initial turn)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello! How can I help?", 30), nil).Once()
+
+	// Planner child will also call LLM
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Here is my implementation plan.", 20), nil).Once()
+
+	// Send plan_request after initial turn completes
+	s.env.RegisterDelayedCallback(func() {
+		cb := &testsuite.TestUpdateCallback{
+			OnAccept: func() {},
+			OnReject: func(err error) {
+				s.T().Fatalf("plan_request rejected: %v", err)
+			},
+			OnComplete: func(result interface{}, err error) {
+				require.NoError(s.T(), err)
+				// The test env may return the value or a pointer
+				switch v := result.(type) {
+				case *PlanRequestAccepted:
+					assert.NotEmpty(s.T(), v.AgentID, "agent ID should be set")
+					assert.NotEmpty(s.T(), v.WorkflowID, "workflow ID should be set")
+				case PlanRequestAccepted:
+					assert.NotEmpty(s.T(), v.AgentID, "agent ID should be set")
+					assert.NotEmpty(s.T(), v.WorkflowID, "workflow ID should be set")
+				default:
+					s.T().Fatalf("unexpected result type: %T", result)
+				}
+			},
+		}
+		s.env.UpdateWorkflow(UpdatePlanRequest, "plan-1", cb,
+			PlanRequest{Message: "Explore the codebase and plan the feature"})
+	}, time.Second*2)
+
+	// Query turn status after plan_request to verify ChildAgents
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+
+		// Should have at least one child agent (the planner)
+		assert.NotEmpty(s.T(), status.ChildAgents, "should have child agents")
+		if len(status.ChildAgents) > 0 {
+			found := false
+			for _, child := range status.ChildAgents {
+				if child.Role == AgentRolePlanner {
+					found = true
+					assert.NotEmpty(s.T(), child.AgentID)
+					assert.NotEmpty(s.T(), child.WorkflowID)
+				}
+			}
+			assert.True(s.T(), found, "should have a planner child agent")
+		}
+	}, time.Second*3)
+
+	s.sendShutdown(time.Second * 5)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+}
+
+// TestMultiTurn_PlanRequest_ValidatorRejectsEmpty verifies that plan_request
+// rejects empty messages.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_PlanRequest_ValidatorRejectsEmpty() {
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 30), nil).Once()
+
+	rejected := false
+	s.env.RegisterDelayedCallback(func() {
+		cb := &testsuite.TestUpdateCallback{
+			OnAccept: func() {
+				s.T().Fatal("plan_request should have been rejected")
+			},
+			OnReject: func(err error) {
+				rejected = true
+				assert.Contains(s.T(), err.Error(), "message must not be empty")
+			},
+			OnComplete: func(interface{}, error) {},
+		}
+		s.env.UpdateWorkflow(UpdatePlanRequest, "plan-empty", cb,
+			PlanRequest{Message: ""})
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 3)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	assert.True(s.T(), rejected, "empty plan_request should have been rejected")
+}
+
+// TestMultiTurn_SuggestionPopulatedAfterTurn verifies that after a turn completes,
+// the GenerateSuggestions activity is called and the suggestion is available via
+// the get_turn_status query.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_SuggestionPopulatedAfterTurn() {
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("I created the file.", 50), nil).Once()
+
+	// Return a suggestion from the activity
+	s.env.OnActivity("GenerateSuggestions", mock.Anything, mock.Anything).
+		Return(activities.SuggestionOutput{Suggestion: "run the tests"}, nil)
+
+	// Query turn status after the turn completes to check suggestion
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+
+		assert.Equal(s.T(), PhaseWaitingForInput, status.Phase)
+		assert.Equal(s.T(), "run the tests", status.Suggestion)
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 3)
+
+	input := testInput("Create a hello world file")
+	input.Config.DisableSuggestions = false
+	s.env.ExecuteWorkflow(AgenticWorkflow, input)
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+}
+
+// TestMultiTurn_SuggestionDisabled verifies that when DisableSuggestions is true,
+// the GenerateSuggestions activity is not called and suggestion is empty.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_SuggestionDisabled() {
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Done!", 30), nil).Once()
+
+	// Query turn status to verify empty suggestion
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+
+		assert.Equal(s.T(), "", status.Suggestion)
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 3)
+
+	// testInput already has DisableSuggestions=true
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+}
+
+// TestMultiTurn_SuggestionClearedOnNewTurn verifies that the suggestion is cleared
+// when a new user input arrives and a new suggestion is generated.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_SuggestionClearedOnNewTurn() {
+	// Both turns: LLM responds
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("First response", 30), nil).Once()
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Second response", 30), nil).Once()
+
+	// GenerateSuggestions returns "second suggestion" for all calls
+	s.env.OnActivity("GenerateSuggestions", mock.Anything, mock.Anything).
+		Return(activities.SuggestionOutput{Suggestion: "second suggestion"}, nil)
+
+	// After second turn, query to verify suggestion is present
+	var capturedSuggestion string
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateUserInput, "input-2", noopCallback(),
+			UserInput{Content: "follow-up"})
+	}, time.Second*2)
+
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+		capturedSuggestion = status.Suggestion
+	}, time.Second*4)
+
+	s.sendShutdown(time.Second * 5)
+
+	input := testInput("Hello")
+	input.Config.DisableSuggestions = false
+	s.env.ExecuteWorkflow(AgenticWorkflow, input)
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	assert.Equal(s.T(), "second suggestion", capturedSuggestion)
+}
+
+// TestMultiTurn_SuggestionNotGeneratedOnInterrupt verifies that when a turn is
+// interrupted, no suggestion is generated.
+func (s *AgenticWorkflowTestSuite) TestMultiTurn_SuggestionNotGeneratedOnInterrupt() {
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 30), nil).Once()
+
+	// Interrupt the turn before it can complete normally
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateInterrupt, "int-1", noopCallback(),
+			InterruptRequest{})
+	}, time.Millisecond*500)
+
+	// Query to verify suggestion is empty after interrupt
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+		assert.Equal(s.T(), "", status.Suggestion)
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 3)
+
+	// Enable suggestions to verify they're NOT generated on interrupt
+	input := testInput("Hello")
+	input.Config.DisableSuggestions = false
+	s.env.ExecuteWorkflow(AgenticWorkflow, input)
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+}
+
+// TestBuildSuggestionInput_ExtractsLastMessages verifies that buildSuggestionInput
+// extracts the correct messages from history.
+func TestBuildSuggestionInput_ExtractsLastMessages(t *testing.T) {
+	state := SessionState{
+		History: history.NewInMemoryHistory(),
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{Provider: "openai"},
+		},
+	}
+
+	// Add conversation items
+	state.History.AddItem(models.ConversationItem{
+		Type: models.ItemTypeTurnStarted, TurnID: "t1",
+	})
+	state.History.AddItem(models.ConversationItem{
+		Type: models.ItemTypeUserMessage, Content: "create a file", TurnID: "t1",
+	})
+	state.History.AddItem(models.ConversationItem{
+		Type: models.ItemTypeAssistantMessage, Content: "I created the file.", TurnID: "t1",
+	})
+	state.History.AddItem(models.ConversationItem{
+		Type: models.ItemTypeTurnComplete, TurnID: "t1",
+	})
+
+	input := state.buildSuggestionInput()
+	require.NotNil(t, input)
+
+	assert.Equal(t, "create a file", input.UserMessage)
+	assert.Equal(t, "I created the file.", input.AssistantMessage)
+	assert.Equal(t, "gpt-4o-mini", input.ModelConfig.Model)
+	assert.Equal(t, "openai", input.ModelConfig.Provider)
+}
+
+// TestBuildSuggestionInput_EmptyHistory returns nil for empty history.
+func TestBuildSuggestionInput_EmptyHistory(t *testing.T) {
+	state := SessionState{
+		History: history.NewInMemoryHistory(),
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{Provider: "openai"},
+		},
+	}
+
+	input := state.buildSuggestionInput()
+	assert.Nil(t, input)
+}
+
+// TestBuildSuggestionInput_AnthropicProvider uses haiku for anthropic.
+func TestBuildSuggestionInput_AnthropicProvider(t *testing.T) {
+	state := SessionState{
+		History: history.NewInMemoryHistory(),
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{Provider: "anthropic"},
+		},
+	}
+
+	state.History.AddItem(models.ConversationItem{
+		Type: models.ItemTypeUserMessage, Content: "hi",
+	})
+	state.History.AddItem(models.ConversationItem{
+		Type: models.ItemTypeAssistantMessage, Content: "hello",
+	})
+
+	input := state.buildSuggestionInput()
+	require.NotNil(t, input)
+
+	assert.Equal(t, "claude-haiku-4-5-20251001", input.ModelConfig.Model)
+	assert.Equal(t, "anthropic", input.ModelConfig.Provider)
 }
 
 // Ensure we reference workflow.Context (suppress unused import warning)

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
 // Default parameter values matching Codex Rust.

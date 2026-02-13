@@ -1,4 +1,4 @@
-// tcx is the interactive CLI for codex-temporal-go workflows.
+// tcx is the interactive CLI for temporal-agent-harness workflows.
 //
 // A TUI-based interface that connects to a Temporal workflow,
 // shows conversation items in a scrollable viewport, and lets you type
@@ -20,9 +20,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mfateev/codex-temporal-go/internal/cli"
-	"github.com/mfateev/codex-temporal-go/internal/instructions"
-	"github.com/mfateev/codex-temporal-go/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/cli"
+	"github.com/mfateev/temporal-agent-harness/internal/instructions"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
 )
 
 func main() {
@@ -42,6 +42,7 @@ func main() {
 	sandboxWritable := flag.String("sandbox-writable", "", "Comma-separated writable roots for workspace-write sandbox")
 	sandboxNetwork := flag.Bool("sandbox-network", true, "Allow network access in sandbox")
 	codexHome := flag.String("codex-home", "", "Path to codex config directory (default: ~/.codex)")
+	noSuggestions := flag.Bool("no-suggestions", false, "Disable prompt suggestions after turn completion")
 	flag.Parse()
 
 	// Support both -m and --message
@@ -120,6 +121,7 @@ func main() {
 		UserPersonalInstructions: userPersonalInstructions,
 		Provider:                 resolvedProvider,
 		Inline:                   *inline,
+		DisableSuggestions:       *noSuggestions,
 	}
 
 	if err := cli.Run(config); err != nil {

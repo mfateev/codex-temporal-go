@@ -213,7 +213,7 @@ if cell.fg != fg || cell.bg != bg {
 - Only sends color change commands when colors actually change
 - Reduces escape sequences sent to terminal
 
-## Comparison to Current codex-temporal-go
+## Comparison to Current temporal-agent-harness
 
 ### Current Implementation (Go)
 
@@ -245,7 +245,7 @@ func (r *Renderer) RenderMarkdown(content string) {
 - Supports streaming while showing cursor
 - Handles terminal resize gracefully
 
-## Recommendations for codex-temporal-go
+## Recommendations for temporal-agent-harness
 
 ### Option 1: Keep Current Simple Approach
 
@@ -321,7 +321,7 @@ fmt.Print("\033[K")
 5. **Viewport Flexibility**: Don't assume full-screen, support inline rendering
 6. **Multi-Width Characters**: Properly handle Unicode width (Chinese, emoji, etc.)
 
-## Next Steps for codex-temporal-go
+## Next Steps for temporal-agent-harness
 
 1. **Decide on approach**: Simple (current), Full TUI (bubbletea), or Minimal (escape sequences)
 2. **If using TUI**: Evaluate bubbletea vs tview vs tcell

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
 // Tests ported from: codex-rs/core/src/tools/handlers/list_dir.rs mod tests

@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
 // ToolActivityInput is the input for tool execution.

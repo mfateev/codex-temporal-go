@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 func singleQuestionReq() *workflow.PendingUserInputRequest {

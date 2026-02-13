@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mfateev/codex-temporal-go/internal/instructions"
+	"github.com/mfateev/temporal-agent-harness/internal/instructions"
 )
 
 // LoadWorkerInstructionsInput is the input for the LoadWorkerInstructions activity.

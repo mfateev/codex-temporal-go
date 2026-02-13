@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
 // ReadFileTool reads file contents with optional offset/limit.

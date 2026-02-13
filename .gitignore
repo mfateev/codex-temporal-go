@@ -23,3 +23,6 @@ vendor/
 
 # OS files
 .DS_Store
+
+# E2E test marker
+.e2e-passed

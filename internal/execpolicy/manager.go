@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mfateev/codex-temporal-go/internal/command_safety"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/command_safety"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
 // ExecPolicyManager loads and evaluates exec policy rules.

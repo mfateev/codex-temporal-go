@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/mfateev/codex-temporal-go/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
 )
 
 // --- collectRecentUserMessages tests ---

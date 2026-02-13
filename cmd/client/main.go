@@ -1,4 +1,4 @@
-// CLI client for codex-temporal-go workflows.
+// CLI client for temporal-agent-harness workflows.
 //
 // Sub-commands:
 //
@@ -21,12 +21,12 @@ import (
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
 
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 const (
-	TaskQueue = "codex-temporal"
+	TaskQueue = "temporal-agent-harness"
 )
 
 func main() {

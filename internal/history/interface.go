@@ -3,7 +3,7 @@
 // Corresponds to: codex-rs/core/src/state/session.rs (ContextManager)
 package history
 
-import "github.com/mfateev/codex-temporal-go/internal/models"
+import "github.com/mfateev/temporal-agent-harness/internal/models"
 
 // ContextManager is the interface for managing conversation history.
 //

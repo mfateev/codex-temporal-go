@@ -1,4 +1,4 @@
-# codex-temporal-go
+# temporal-agent-harness
 
 A Go port of [OpenAI Codex](https://github.com/openai/codex) built on [Temporal](https://temporal.io) for durable agentic execution. The CLI is called `tcx`.
 
@@ -18,14 +18,14 @@ An LLM-driven coding agent that runs shell commands, reads/writes files, and sea
 ## Install
 
 ```bash
-go install github.com/mfateev/codex-temporal-go/cmd/tcx@latest
-go install github.com/mfateev/codex-temporal-go/cmd/worker@latest
+go install github.com/mfateev/temporal-agent-harness/cmd/tcx@latest
+go install github.com/mfateev/temporal-agent-harness/cmd/worker@latest
 ```
 
 Or build from source:
 ```bash
-git clone https://github.com/mfateev/codex-temporal-go.git
-cd codex-temporal-go
+git clone https://github.com/mfateev/temporal-agent-harness.git
+cd temporal-agent-harness
 go build -o tcx ./cmd/tcx
 go build -o worker ./cmd/worker
 ```
@@ -67,6 +67,7 @@ The TUI supports multi-line input for composing longer messages:
 - **↑/↓, PgUp/PgDn** - Scroll viewport
 - **/exit, /quit** - Exit session
 - **/end** - End session gracefully
+- **/model** - Switch model for the current session
 
 The input area automatically expands up to 10 lines as you type.
 

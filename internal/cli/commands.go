@@ -10,8 +10,9 @@ import (
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
 
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/llm"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 // startWorkflowCmd starts a new workflow and returns WorkflowStartedMsg.
@@ -42,6 +43,7 @@ func startWorkflowCmd(c client.Client, config Config) tea.Cmd {
 				SandboxMode:              config.SandboxMode,
 				SandboxWritableRoots:     config.SandboxWritableRoots,
 				SandboxNetworkAccess:     config.SandboxNetworkAccess,
+				DisableSuggestions:       config.DisableSuggestions,
 				Cwd:                      cwd,
 				SessionSource:            "interactive-cli",
 				CLIProjectDocs:           config.CLIProjectDocs,
@@ -231,6 +233,140 @@ func sendUserInputQuestionResponseCmd(c client.Client, workflowID string, resp w
 		}
 
 		return UserInputQuestionSentMsg{}
+	}
+}
+
+// sendCompactCmd sends a compact request to the workflow.
+func sendCompactCmd(c client.Client, workflowID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID:   workflowID,
+			UpdateName:   workflow.UpdateCompact,
+			Args:         []interface{}{workflow.CompactRequest{}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return CompactErrorMsg{Err: err}
+		}
+
+		var resp workflow.CompactResponse
+		if err := updateHandle.Get(ctx, &resp); err != nil {
+			return CompactErrorMsg{Err: err}
+		}
+
+		return CompactSentMsg{}
+	}
+}
+
+// sendPlanRequestCmd sends a plan_request Update to the parent workflow, which
+// spawns a planner child workflow and returns its workflow ID.
+func sendPlanRequestCmd(c client.Client, workflowID, message string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID:   workflowID,
+			UpdateName:   workflow.UpdatePlanRequest,
+			Args:         []interface{}{workflow.PlanRequest{Message: message}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return PlanRequestErrorMsg{Err: err}
+		}
+
+		var accepted workflow.PlanRequestAccepted
+		if err := updateHandle.Get(ctx, &accepted); err != nil {
+			return PlanRequestErrorMsg{Err: err}
+		}
+
+		return PlanRequestAcceptedMsg{
+			AgentID:    accepted.AgentID,
+			WorkflowID: accepted.WorkflowID,
+		}
+	}
+}
+
+// sendUpdateModelCmd sends an update_model Update to the workflow.
+func sendUpdateModelCmd(c client.Client, workflowID, provider, model string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID:   workflowID,
+			UpdateName:   workflow.UpdateModel,
+			Args:         []interface{}{workflow.UpdateModelRequest{Provider: provider, Model: model}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return ModelUpdateErrorMsg{Err: err}
+		}
+
+		var resp workflow.UpdateModelResponse
+		if err := updateHandle.Get(ctx, &resp); err != nil {
+			return ModelUpdateErrorMsg{Err: err}
+		}
+
+		return ModelUpdateSentMsg{Provider: provider, Model: model}
+	}
+}
+
+// queryChildConversationItems queries a child workflow's conversation items
+// and extracts the last assistant message (the plan text).
+func queryChildConversationItems(c client.Client, childWorkflowID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		resp, err := c.QueryWorkflow(ctx, childWorkflowID, "", workflow.QueryGetConversationItems)
+		if err != nil {
+			return PlannerCompletedMsg{PlanText: ""}
+		}
+
+		var items []models.ConversationItem
+		if err := resp.Get(&items); err != nil {
+			return PlannerCompletedMsg{PlanText: ""}
+		}
+
+		// Extract the last assistant message as the plan
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].Type == models.ItemTypeAssistantMessage && items[i].Content != "" {
+				return PlannerCompletedMsg{PlanText: items[i].Content}
+			}
+		}
+
+		return PlannerCompletedMsg{PlanText: ""}
+	}
+}
+
+// fetchModelsCmd fetches the list of available models from all configured
+// providers and returns a ModelsFetchedMsg. Uses a 10-second timeout.
+func fetchModelsCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		available, err := llm.FetchAvailableModels(ctx)
+		if err != nil {
+			return ModelsFetchedMsg{Err: err}
+		}
+		if available == nil {
+			return ModelsFetchedMsg{} // nil Models signals fallback
+		}
+
+		opts := make([]modelOption, 0, len(available))
+		for _, m := range available {
+			opts = append(opts, modelOption{
+				Provider:    m.Provider,
+				Model:       m.ID,
+				DisplayName: m.DisplayName,
+			})
+		}
+		return ModelsFetchedMsg{Models: opts}
 	}
 }
 
