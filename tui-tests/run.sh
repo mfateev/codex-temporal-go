@@ -104,7 +104,7 @@ done
 # --- 4. Start worker ---
 
 echo "==> Starting worker..."
-TEMPORAL_HOST_URL="localhost:$TEMPORAL_PORT" \
+TEMPORAL_ADDRESS="localhost:$TEMPORAL_PORT" \
   "$PROJECT_ROOT/worker" &>/dev/null &
 WORKER_PID=$!
 echo "    Worker PID: $WORKER_PID"
