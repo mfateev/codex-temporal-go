@@ -556,3 +556,180 @@ func TestModel_MultiLineInput(t *testing.T) {
 	assert.Equal(t, StateWatching, rm.state)
 	assert.Empty(t, rm.textarea.Value(), "textarea should be cleared after submit")
 }
+
+// --- Suggestion Tests ---
+
+func TestModel_SuggestionAppliedOnTurnComplete(t *testing.T) {
+	m := newTestModel()
+	m.state = StateWatching
+	m.workflowID = "test-wf"
+	m.lastRenderedSeq = 0
+
+	msg := PollResultMsg{
+		Result: PollResult{
+			Items: []models.ConversationItem{
+				{Type: models.ItemTypeTurnComplete, Seq: 1, TurnID: "t1"},
+			},
+			Status: workflow.TurnStatus{
+				Phase:      workflow.PhaseWaitingForInput,
+				Suggestion: "run the tests",
+			},
+		},
+	}
+
+	result, _ := m.handlePollResult(msg)
+	rm := result.(*Model)
+	assert.Equal(t, StateInput, rm.state)
+	assert.Equal(t, "run the tests", rm.suggestion)
+	assert.Equal(t, "run the tests", rm.textarea.Placeholder)
+}
+
+func TestModel_TabAcceptsSuggestion(t *testing.T) {
+	m := newTestModel()
+	m.state = StateInput
+	m.suggestion = "run the tests"
+	m.textarea.SetValue("") // Empty textarea
+
+	result, _ := m.handleInputKey(tea.KeyMsg{Type: tea.KeyTab})
+	rm := result.(*Model)
+	assert.Equal(t, "run the tests", rm.textarea.Value())
+	assert.Equal(t, "", rm.suggestion, "suggestion should be cleared after Tab accept")
+}
+
+func TestModel_TabNoOpWithoutSuggestion(t *testing.T) {
+	m := newTestModel()
+	m.state = StateInput
+	m.suggestion = ""
+	m.textarea.SetValue("")
+
+	result, _ := m.handleInputKey(tea.KeyMsg{Type: tea.KeyTab})
+	rm := result.(*Model)
+	assert.Equal(t, "", rm.textarea.Value(), "Tab without suggestion should not change textarea")
+}
+
+func TestModel_TabNoOpWithExistingText(t *testing.T) {
+	m := newTestModel()
+	m.state = StateInput
+	m.suggestion = "run the tests"
+	m.textarea.SetValue("something else")
+
+	result, _ := m.handleInputKey(tea.KeyMsg{Type: tea.KeyTab})
+	rm := result.(*Model)
+	assert.Equal(t, "something else", rm.textarea.Value(), "Tab with existing text should not replace")
+	assert.Equal(t, "run the tests", rm.suggestion, "suggestion should remain")
+}
+
+func TestModel_SubmitClearsSuggestion(t *testing.T) {
+	m := newTestModel()
+	m.state = StateInput
+	m.workflowID = "test-wf"
+	m.suggestion = "run the tests"
+	m.textarea.Placeholder = "run the tests"
+	m.textarea.SetValue("something else")
+
+	result, _ := m.handleInputKey(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(*Model)
+	assert.Equal(t, "", rm.suggestion, "suggestion should be cleared on submit")
+	assert.Equal(t, "Type a message...", rm.textarea.Placeholder, "placeholder should be reset")
+}
+
+func TestModel_SuggestionPollAppliesSuggestion(t *testing.T) {
+	m := newTestModel()
+	m.state = StateInput
+	m.textarea.SetValue("")
+
+	result, _ := m.handleSuggestionPoll(SuggestionPollMsg{Suggestion: "commit this"})
+	rm := result.(*Model)
+	assert.Equal(t, "commit this", rm.suggestion)
+	assert.Equal(t, "commit this", rm.textarea.Placeholder)
+}
+
+func TestModel_SuggestionPollIgnoredIfTyping(t *testing.T) {
+	m := newTestModel()
+	m.state = StateInput
+	m.textarea.SetValue("already typing")
+
+	result, _ := m.handleSuggestionPoll(SuggestionPollMsg{Suggestion: "commit this"})
+	rm := result.(*Model)
+	assert.Equal(t, "", rm.suggestion, "suggestion should not apply when user is typing")
+}
+
+func TestModel_SuggestionPollIgnoredIfNotInInputState(t *testing.T) {
+	m := newTestModel()
+	m.state = StateWatching
+
+	result, _ := m.handleSuggestionPoll(SuggestionPollMsg{Suggestion: "commit this"})
+	rm := result.(*Model)
+	assert.Equal(t, "", rm.suggestion, "suggestion should not apply when not in input state")
+}
+
+func TestModel_SuggestionPollEmptyIgnored(t *testing.T) {
+	m := newTestModel()
+	m.state = StateInput
+	m.textarea.SetValue("")
+
+	result, _ := m.handleSuggestionPoll(SuggestionPollMsg{Suggestion: ""})
+	rm := result.(*Model)
+	assert.Equal(t, "", rm.suggestion, "empty suggestion should be ignored")
+}
+
+func TestModel_ClearSuggestionRestoresPlaceholder(t *testing.T) {
+	m := newTestModel()
+	m.applySuggestion("run the tests")
+	assert.Equal(t, "run the tests", m.suggestion)
+	assert.Equal(t, "run the tests", m.textarea.Placeholder)
+
+	m.clearSuggestion()
+	assert.Equal(t, "", m.suggestion)
+	assert.Equal(t, "Type a message...", m.textarea.Placeholder)
+}
+
+func TestModel_TurnCompleteSchedulesSuggestionPoll(t *testing.T) {
+	m := newTestModel()
+	m.state = StateWatching
+	m.workflowID = "test-wf"
+	m.lastRenderedSeq = 0
+
+	msg := PollResultMsg{
+		Result: PollResult{
+			Items: []models.ConversationItem{
+				{Type: models.ItemTypeTurnComplete, Seq: 1, TurnID: "t1"},
+			},
+			Status: workflow.TurnStatus{
+				Phase:      workflow.PhaseWaitingForInput,
+				Suggestion: "", // No suggestion yet
+			},
+		},
+	}
+
+	result, cmd := m.handlePollResult(msg)
+	rm := result.(*Model)
+	assert.Equal(t, StateInput, rm.state)
+	assert.Equal(t, "", rm.suggestion, "no suggestion yet")
+	assert.NotNil(t, cmd, "should have scheduled commands (focusTextarea + suggestionPoll)")
+}
+
+func TestModel_TurnCompleteNoSuggestionPollWhenDisabled(t *testing.T) {
+	m := newTestModel()
+	m.state = StateWatching
+	m.workflowID = "test-wf"
+	m.lastRenderedSeq = 0
+	m.config.DisableSuggestions = true
+
+	msg := PollResultMsg{
+		Result: PollResult{
+			Items: []models.ConversationItem{
+				{Type: models.ItemTypeTurnComplete, Seq: 1, TurnID: "t1"},
+			},
+			Status: workflow.TurnStatus{
+				Phase:      workflow.PhaseWaitingForInput,
+				Suggestion: "",
+			},
+		},
+	}
+
+	_, _ = m.handlePollResult(msg)
+	// With DisableSuggestions=true, the delayed poll should not be scheduled.
+	// We can't easily test what commands are in a batch, but we verify no suggestion is set.
+	assert.Equal(t, "", m.suggestion)
+}

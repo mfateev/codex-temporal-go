@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/mfateev/codex-temporal-go/internal/instructions"
 	"github.com/mfateev/codex-temporal-go/internal/llm"
 	"github.com/mfateev/codex-temporal-go/internal/models"
 	"github.com/mfateev/codex-temporal-go/internal/tools"
@@ -124,6 +125,53 @@ func (a *LLMActivities) ExecuteCompact(ctx context.Context, input CompactActivit
 		Items:      resp.Items,
 		TokenUsage: resp.TokenUsage,
 	}, nil
+}
+
+// SuggestionInput is the input for the GenerateSuggestions activity.
+type SuggestionInput struct {
+	UserMessage      string            `json:"user_message"`
+	AssistantMessage string            `json:"assistant_message"`
+	ToolSummaries    []string          `json:"tool_summaries,omitempty"`
+	ModelConfig      models.ModelConfig `json:"model_config"`
+}
+
+// SuggestionOutput is the output from the GenerateSuggestions activity.
+type SuggestionOutput struct {
+	Suggestion string `json:"suggestion"` // Single suggestion or empty string
+}
+
+// GenerateSuggestions calls a cheap/fast LLM to generate a single prompt
+// suggestion after a turn completes. Best-effort: any error returns empty.
+func (a *LLMActivities) GenerateSuggestions(ctx context.Context, input SuggestionInput) (SuggestionOutput, error) {
+	userContent := instructions.BuildSuggestionInput(
+		input.UserMessage, input.AssistantMessage, input.ToolSummaries)
+
+	request := llm.LLMRequest{
+		History: []models.ConversationItem{
+			{
+				Type:    models.ItemTypeUserMessage,
+				Content: userContent,
+			},
+		},
+		ModelConfig:      input.ModelConfig,
+		BaseInstructions: instructions.SuggestionSystemPrompt,
+	}
+
+	response, err := a.client.Call(ctx, request)
+	if err != nil {
+		// Best-effort: return empty on any error
+		return SuggestionOutput{}, nil
+	}
+
+	// Extract the first assistant message content
+	for _, item := range response.Items {
+		if item.Type == models.ItemTypeAssistantMessage && item.Content != "" {
+			suggestion := instructions.ParseSuggestionResponse(item.Content)
+			return SuggestionOutput{Suggestion: suggestion}, nil
+		}
+	}
+
+	return SuggestionOutput{}, nil
 }
 
 // EstimateContextUsage estimates if we're approaching context window limits.

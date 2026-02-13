@@ -106,6 +106,9 @@ type SessionConfiguration struct {
 	// Maps to: codex-rs auto_compact_token_limit
 	AutoCompactTokenLimit int `json:"auto_compact_token_limit,omitempty"`
 
+	// Disable post-turn prompt suggestions
+	DisableSuggestions bool `json:"disable_suggestions,omitempty"`
+
 	// Session metadata
 	SessionSource string `json:"session_source,omitempty"` // "cli", "api", "exec" — for logging/tracking
 

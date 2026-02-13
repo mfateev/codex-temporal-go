@@ -87,6 +87,7 @@ type TurnStatus struct {
 	TotalTokens             int                      `json:"total_tokens"`
 	TurnCount               int                      `json:"turn_count"`
 	WorkerVersion           string                   `json:"worker_version,omitempty"`
+	Suggestion              string                   `json:"suggestion,omitempty"`
 }
 
 // WorkflowInput is the initial input to start a conversation.
@@ -317,6 +318,9 @@ type SessionState struct {
 	// Cumulative stats (persist across ContinueAsNew)
 	TotalTokens       int      `json:"total_tokens"`
 	ToolCallsExecuted []string `json:"tool_calls_executed"`
+
+	// Transient: post-turn prompt suggestion (not serialized — best-effort)
+	Suggestion string `json:"-"`
 
 	// Subagent control — manages child workflow lifecycles.
 	// Maps to: codex-rs/core/src/agent/control.rs AgentControl

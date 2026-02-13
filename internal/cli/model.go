@@ -63,8 +63,9 @@ type Config struct {
 	UserPersonalInstructions string // From ~/.codex/instructions.md
 
 	// TUI settings
-	Provider string // LLM provider (openai, anthropic, google)
-	Inline   bool   // Disable alt-screen mode
+	Provider           string // LLM provider (openai, anthropic, google)
+	Inline             bool   // Disable alt-screen mode
+	DisableSuggestions bool   // Disable prompt suggestions
 }
 
 // Model is the bubbletea model for the interactive CLI.
@@ -118,6 +119,9 @@ type Model struct {
 	parentWorkflowID string // saved parent ID while attached to planner
 	plannerAgentID   string // agent ID of the planner child
 	plannerActive    bool   // whether TUI is attached to the planner child
+
+	// Prompt suggestion (ghost text shown as placeholder after turn completes)
+	suggestion string
 
 	// Paste buffering: multi-line pastes show "[N lines pasted]" placeholder
 	pastedContent string
@@ -305,6 +309,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendToViewport(fmt.Sprintf("Error starting plan mode: %v\n", msg.Err))
 		m.state = StateInput
 		cmds = append(cmds, m.focusTextarea())
+
+	case SuggestionPollMsg:
+		return m.handleSuggestionPoll(msg)
 
 	case PlannerCompletedMsg:
 		return m.handlePlannerCompleted(msg)
@@ -519,6 +526,16 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// Tab key: accept suggestion if present and textarea is empty
+	if msg.Type == tea.KeyTab {
+		if m.suggestion != "" && m.textarea.Value() == "" {
+			m.textarea.SetValue(m.suggestion)
+			m.textarea.CursorEnd()
+			m.clearSuggestion()
+		}
+		return m, nil
+	}
+
 	// Ignore Enter during a bracketed paste (don't submit mid-paste)
 	if msg.Paste && msg.Type == tea.KeyEnter {
 		return m, nil
@@ -530,6 +547,7 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.textarea.Reset()
 		m.pastedContent = ""
 		m.pasteLabel = ""
+		m.clearSuggestion()
 
 		// Reset textarea to initial height after submit
 		m.textarea.SetHeight(1)
@@ -1102,7 +1120,17 @@ func (m *Model) handlePollResult(msg PollResultMsg) (tea.Model, tea.Cmd) {
 	if m.isTurnComplete(result.Items) && result.Status.Phase == workflow.PhaseWaitingForInput && m.state == StateWatching {
 		m.stopPolling()
 		m.state = StateInput
-		return m, m.focusTextarea()
+		m.suggestion = ""
+
+		cmds := []tea.Cmd{m.focusTextarea()}
+
+		// Apply suggestion if already available; otherwise schedule a delayed poll
+		if result.Status.Suggestion != "" {
+			m.applySuggestion(result.Status.Suggestion)
+		} else if !m.config.DisableSuggestions {
+			cmds = append(cmds, m.scheduleSuggestionPoll())
+		}
+		return m, tea.Batch(cmds...)
 	}
 
 	// Continue polling
@@ -1323,6 +1351,55 @@ func (m *Model) inputAreaHeight() int {
 		return m.selector.Height()
 	}
 	return m.calculateTextareaHeight()
+}
+
+// applySuggestion sets the suggestion and updates the textarea placeholder.
+func (m *Model) applySuggestion(suggestion string) {
+	m.suggestion = suggestion
+	if suggestion != "" {
+		m.textarea.Placeholder = suggestion
+	}
+}
+
+// clearSuggestion resets the suggestion and restores the default placeholder.
+func (m *Model) clearSuggestion() {
+	m.suggestion = ""
+	m.textarea.Placeholder = "Type a message..."
+}
+
+// scheduleSuggestionPoll returns a tea.Cmd that waits 500ms, then queries the
+// workflow for the suggestion field. This handles the case where the suggestion
+// isn't ready yet when the turn completes.
+func (m *Model) scheduleSuggestionPoll() tea.Cmd {
+	c := m.client
+	wfID := m.workflowID
+	return func() tea.Msg {
+		time.Sleep(500 * time.Millisecond)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		resp, err := c.QueryWorkflow(ctx, wfID, "", workflow.QueryGetTurnStatus)
+		if err != nil {
+			return SuggestionPollMsg{}
+		}
+
+		var status workflow.TurnStatus
+		if err := resp.Get(&status); err != nil {
+			return SuggestionPollMsg{}
+		}
+
+		return SuggestionPollMsg{Suggestion: status.Suggestion}
+	}
+}
+
+// handleSuggestionPoll processes the delayed suggestion poll result.
+func (m *Model) handleSuggestionPoll(msg SuggestionPollMsg) (tea.Model, tea.Cmd) {
+	// Only apply if we're still in input state with no text typed yet
+	if m.state == StateInput && m.textarea.Value() == "" && msg.Suggestion != "" {
+		m.applySuggestion(msg.Suggestion)
+	}
+	return m, nil
 }
 
 // Run is the main entry point for the CLI.

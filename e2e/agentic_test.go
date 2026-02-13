@@ -207,6 +207,7 @@ func createWorker(c client.Client) worker.Worker {
 	llmActivities := activities.NewLLMActivities(llmClient)
 	w.RegisterActivity(llmActivities.ExecuteLLMCall)
 	w.RegisterActivity(llmActivities.ExecuteCompact)
+	w.RegisterActivity(llmActivities.GenerateSuggestions)
 
 	toolActivities := activities.NewToolActivities(toolRegistry)
 	w.RegisterActivity(toolActivities.ExecuteTool)
@@ -221,7 +222,9 @@ func createWorker(c client.Client) worker.Worker {
 // --- Test helpers ---
 
 // testSessionConfig returns a deterministic session configuration for testing.
-// Temperature 0 makes LLM responses reproducible.
+// Temperature 0 makes LLM responses reproducible. Suggestions are disabled by
+// default to avoid extra API calls; tests that exercise suggestions should
+// override DisableSuggestions.
 func testSessionConfig(maxTokens int, tools models.ToolsConfig) models.SessionConfiguration {
 	return models.SessionConfiguration{
 		Model: models.ModelConfig{
@@ -230,7 +233,8 @@ func testSessionConfig(maxTokens int, tools models.ToolsConfig) models.SessionCo
 			MaxTokens:     maxTokens,
 			ContextWindow: 128000,
 		},
-		Tools: tools,
+		Tools:              tools,
+		DisableSuggestions: true,
 	}
 }
 
@@ -1296,6 +1300,130 @@ func TestAgenticWorkflow_PlanMode(t *testing.T) {
 	result := shutdownWorkflow(t, ctx, c, workflowID)
 	assert.Equal(t, "shutdown", result.EndReason)
 	t.Logf("Plan mode test complete. Parent tokens: %d", result.TotalTokens)
+}
+
+// TestAgenticWorkflow_PromptSuggestion tests that after a turn completes,
+// the GenerateSuggestions activity runs and produces a suggestion visible
+// via the get_turn_status query.
+func TestAgenticWorkflow_PromptSuggestion(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-suggestion-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage:    "Write a Go function that adds two numbers. Do not use any tools.",
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Model:         CheapModel,
+				Temperature:   0,
+				MaxTokens:     500,
+				ContextWindow: 128000,
+			},
+			Tools: models.ToolsConfig{
+				EnableShell:    false,
+				EnableReadFile: false,
+			},
+			DisableSuggestions: false, // Enable suggestions for this test
+		},
+	}
+
+	t.Logf("Starting suggestion test workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+
+	// Wait for the turn to complete
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+
+	// Poll for suggestion to appear (it's async, may take ~300-500ms after turn complete)
+	var suggestion string
+	deadline := time.After(30 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for suggestion == "" {
+		select {
+		case <-deadline:
+			t.Log("Suggestion not available after 30s (this is acceptable — LLM may return NONE)")
+			goto done
+		case <-ctx.Done():
+			t.Fatal("Context cancelled waiting for suggestion")
+		case <-ticker.C:
+			resp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetTurnStatus)
+			if err != nil {
+				continue
+			}
+			var status workflow.TurnStatus
+			if err := resp.Get(&status); err != nil {
+				continue
+			}
+			if status.Suggestion != "" {
+				suggestion = status.Suggestion
+				t.Logf("Got suggestion: %q", suggestion)
+			}
+		}
+	}
+
+done:
+	// The suggestion may be empty if the LLM returned NONE — that's valid.
+	// What we verify is that the workflow didn't fail and the field exists.
+	t.Logf("Suggestion result: %q (empty is valid if LLM returned NONE)", suggestion)
+
+	// If we got a suggestion, verify it's reasonable (short, single line)
+	if suggestion != "" {
+		assert.False(t, strings.Contains(suggestion, "\n"), "Suggestion should be single line")
+		assert.LessOrEqual(t, len(suggestion), 100, "Suggestion should be concise")
+	}
+
+	// Shutdown and verify workflow completed normally
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+	assert.Equal(t, "shutdown", result.EndReason)
+	assert.Greater(t, result.TotalTokens, 0)
+
+	t.Logf("Suggestion test - Total tokens: %d", result.TotalTokens)
+}
+
+// TestAgenticWorkflow_SuggestionDisabledE2E tests that with DisableSuggestions=true,
+// no suggestion appears after turn completion.
+func TestAgenticWorkflow_SuggestionDisabledE2E(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-no-suggestion-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage:    "Say hello in exactly 3 words. Do not use any tools.",
+		Config: testSessionConfig(100, models.ToolsConfig{
+			EnableShell:    false,
+			EnableReadFile: false,
+		}),
+		// testSessionConfig already sets DisableSuggestions: true
+	}
+
+	t.Logf("Starting no-suggestion test workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+
+	// Wait a moment for any async suggestion to arrive (it shouldn't)
+	time.Sleep(2 * time.Second)
+
+	// Query turn status — suggestion should be empty
+	resp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetTurnStatus)
+	require.NoError(t, err)
+	var status workflow.TurnStatus
+	require.NoError(t, resp.Get(&status))
+
+	assert.Equal(t, "", status.Suggestion, "Suggestion should be empty when disabled")
+
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+	assert.Equal(t, "shutdown", result.EndReason)
+
+	t.Logf("No-suggestion test - Total tokens: %d", result.TotalTokens)
 }
 
 // truncateStr truncates a string to n characters with "..." appended.

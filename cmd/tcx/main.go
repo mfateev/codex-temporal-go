@@ -42,6 +42,7 @@ func main() {
 	sandboxWritable := flag.String("sandbox-writable", "", "Comma-separated writable roots for workspace-write sandbox")
 	sandboxNetwork := flag.Bool("sandbox-network", true, "Allow network access in sandbox")
 	codexHome := flag.String("codex-home", "", "Path to codex config directory (default: ~/.codex)")
+	noSuggestions := flag.Bool("no-suggestions", false, "Disable prompt suggestions after turn completion")
 	flag.Parse()
 
 	// Support both -m and --message
@@ -120,6 +121,7 @@ func main() {
 		UserPersonalInstructions: userPersonalInstructions,
 		Provider:                 resolvedProvider,
 		Inline:                   *inline,
+		DisableSuggestions:       *noSuggestions,
 	}
 
 	if err := cli.Run(config); err != nil {

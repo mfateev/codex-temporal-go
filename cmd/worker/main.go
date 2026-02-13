@@ -74,6 +74,7 @@ func main() {
 	llmActivities := activities.NewLLMActivities(llmClient)
 	w.RegisterActivity(llmActivities.ExecuteLLMCall)
 	w.RegisterActivity(llmActivities.ExecuteCompact)
+	w.RegisterActivity(llmActivities.GenerateSuggestions)
 
 	toolActivities := activities.NewToolActivities(toolRegistry)
 	w.RegisterActivity(toolActivities.ExecuteTool)
