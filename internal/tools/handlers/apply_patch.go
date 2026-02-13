@@ -4,8 +4,8 @@ import (
 	"context"
 	"os"
 
-	"github.com/mfateev/codex-temporal-go/internal/tools"
-	"github.com/mfateev/codex-temporal-go/internal/tools/patch"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/tools/patch"
 )
 
 // ApplyPatchTool applies structured file patches.

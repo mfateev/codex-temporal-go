@@ -1,4 +1,4 @@
-// E2E tests for codex-temporal-go
+// E2E tests for temporal-agent-harness
 //
 // These tests are self-contained: TestMain starts a Temporal dev server on a
 // non-standard port (17233) and an in-process worker. No external services
@@ -25,16 +25,16 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/mfateev/codex-temporal-go/internal/activities"
-	"github.com/mfateev/codex-temporal-go/internal/llm"
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
-	"github.com/mfateev/codex-temporal-go/internal/tools/handlers"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/activities"
+	"github.com/mfateev/temporal-agent-harness/internal/llm"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/tools/handlers"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 const (
-	TaskQueue       = "codex-temporal"
+	TaskQueue       = "temporal-agent-harness"
 	TestHostPort    = "localhost:17233" // Non-standard port to avoid collisions
 	TestUIPort      = "17234"          // UI port (also non-standard)
 	WorkflowTimeout = 3 * time.Minute

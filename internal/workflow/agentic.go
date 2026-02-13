@@ -16,13 +16,13 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/mfateev/codex-temporal-go/internal/activities"
-	"github.com/mfateev/codex-temporal-go/internal/execpolicy"
-	"github.com/mfateev/codex-temporal-go/internal/history"
-	"github.com/mfateev/codex-temporal-go/internal/instructions"
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
-	"github.com/mfateev/codex-temporal-go/internal/version"
+	"github.com/mfateev/temporal-agent-harness/internal/activities"
+	"github.com/mfateev/temporal-agent-harness/internal/execpolicy"
+	"github.com/mfateev/temporal-agent-harness/internal/history"
+	"github.com/mfateev/temporal-agent-harness/internal/instructions"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/version"
 )
 
 // IdleTimeout is how long the workflow waits for user input before triggering ContinueAsNew.

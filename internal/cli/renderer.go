@@ -1,4 +1,4 @@
-// Package cli implements the interactive REPL for codex-temporal-go.
+// Package cli implements the interactive REPL for temporal-agent-harness.
 package cli
 
 import (
@@ -10,8 +10,8 @@ import (
 	"github.com/charmbracelet/glamour"
 	gansi "github.com/charmbracelet/glamour/ansi"
 	glamourstyles "github.com/charmbracelet/glamour/styles"
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 	"golang.org/x/term"
 )
 

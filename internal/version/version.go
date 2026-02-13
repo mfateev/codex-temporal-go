@@ -2,7 +2,7 @@
 //
 // Set at build time via:
 //
-//	go build -ldflags "-X github.com/mfateev/codex-temporal-go/internal/version.GitCommit=$(git rev-parse --short HEAD)"
+//	go build -ldflags "-X github.com/mfateev/temporal-agent-harness/internal/version.GitCommit=$(git rev-parse --short HEAD)"
 package version
 
 // GitCommit is the short git commit hash, set at build time via ldflags.

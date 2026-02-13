@@ -14,10 +14,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"go.temporal.io/sdk/client"
 
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/temporalclient"
-	"github.com/mfateev/codex-temporal-go/internal/version"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/temporalclient"
+	"github.com/mfateev/temporal-agent-harness/internal/version"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 type modelOption struct {
@@ -71,7 +71,7 @@ func (m *Model) modelOptionAt(idx int) (provider, model string) {
 }
 
 const (
-	TaskQueue    = "codex-temporal"
+	TaskQueue    = "temporal-agent-harness"
 	PollInterval = 200 * time.Millisecond
 	MaxTextareaHeight = 10 // Maximum height for multi-line input
 )

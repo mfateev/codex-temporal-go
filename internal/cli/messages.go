@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 // WorkflowStartedMsg is sent when a workflow has been started or resumed.

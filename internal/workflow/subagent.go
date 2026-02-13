@@ -14,8 +14,8 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/mfateev/codex-temporal-go/internal/instructions"
-	"github.com/mfateev/codex-temporal-go/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/instructions"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
 )
 
 // ---------------------------------------------------------------------------

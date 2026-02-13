@@ -9,11 +9,11 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/mfateev/codex-temporal-go/internal/command_safety"
-	execpkg "github.com/mfateev/codex-temporal-go/internal/exec"
-	"github.com/mfateev/codex-temporal-go/internal/execenv"
-	"github.com/mfateev/codex-temporal-go/internal/sandbox"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/command_safety"
+	execpkg "github.com/mfateev/temporal-agent-harness/internal/exec"
+	"github.com/mfateev/temporal-agent-harness/internal/execenv"
+	"github.com/mfateev/temporal-agent-harness/internal/sandbox"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
 // ShellTool executes shell commands.

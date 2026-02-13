@@ -1,4 +1,4 @@
-module github.com/mfateev/codex-temporal-go
+module github.com/mfateev/temporal-agent-harness
 
 go 1.24.2
 

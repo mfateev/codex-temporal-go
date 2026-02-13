@@ -8,7 +8,7 @@ import (
 
 	"go.temporal.io/api/serviceerror"
 
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 // HandleApprovalInput parses the user's response to an approval prompt.

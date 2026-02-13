@@ -7,10 +7,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/mfateev/codex-temporal-go/internal/instructions"
-	"github.com/mfateev/codex-temporal-go/internal/llm"
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/instructions"
+	"github.com/mfateev/temporal-agent-harness/internal/llm"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
 // LLMActivityInput is the input for the LLM activity.

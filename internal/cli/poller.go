@@ -6,8 +6,8 @@ import (
 
 	"go.temporal.io/sdk/client"
 
-	"github.com/mfateev/codex-temporal-go/internal/models"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 // PollResult holds the results from a single poll cycle.

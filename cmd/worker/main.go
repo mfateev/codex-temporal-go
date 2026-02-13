@@ -1,4 +1,4 @@
-// Worker executable for codex-temporal-go
+// Worker executable for temporal-agent-harness
 //
 // This starts a Temporal worker that executes workflows and activities.
 package main
@@ -10,17 +10,17 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/mfateev/codex-temporal-go/internal/activities"
-	"github.com/mfateev/codex-temporal-go/internal/llm"
-	"github.com/mfateev/codex-temporal-go/internal/temporalclient"
-	"github.com/mfateev/codex-temporal-go/internal/tools"
-	"github.com/mfateev/codex-temporal-go/internal/tools/handlers"
-	"github.com/mfateev/codex-temporal-go/internal/version"
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/activities"
+	"github.com/mfateev/temporal-agent-harness/internal/llm"
+	"github.com/mfateev/temporal-agent-harness/internal/temporalclient"
+	"github.com/mfateev/temporal-agent-harness/internal/tools"
+	"github.com/mfateev/temporal-agent-harness/internal/tools/handlers"
+	"github.com/mfateev/temporal-agent-harness/internal/version"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 const (
-	TaskQueue = "codex-temporal"
+	TaskQueue = "temporal-agent-harness"
 )
 
 func main() {

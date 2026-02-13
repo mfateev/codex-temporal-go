@@ -290,7 +290,7 @@ long prompts, users need multi-line support.
 Support a config file so users don't have to pass flags every time:
 
 ```toml
-# ~/.codex-temporal/config.toml
+# ~/.temporal-agent-harness/config.toml
 model = "gpt-4o"
 temporal_host = "localhost:7233"
 enable_shell = true

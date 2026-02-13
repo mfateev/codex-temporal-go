@@ -1,4 +1,4 @@
-// Package models contains shared types for the codex-temporal-go project.
+// Package models contains shared types for the temporal-agent-harness project.
 //
 // Corresponds to: codex-rs/core/src/protocol (ResponseItem, ToolCall, etc.)
 package models

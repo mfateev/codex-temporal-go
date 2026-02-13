@@ -12,7 +12,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/mfateev/codex-temporal-go/internal/activities"
+	"github.com/mfateev/temporal-agent-harness/internal/activities"
 )
 
 // performCompaction executes context compaction by calling the ExecuteCompact

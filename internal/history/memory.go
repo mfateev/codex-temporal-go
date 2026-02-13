@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/mfateev/codex-temporal-go/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
 )
 
 // InMemoryHistory is a simple in-memory implementation of ContextManager.

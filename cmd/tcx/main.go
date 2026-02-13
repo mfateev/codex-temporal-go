@@ -1,4 +1,4 @@
-// tcx is the interactive CLI for codex-temporal-go workflows.
+// tcx is the interactive CLI for temporal-agent-harness workflows.
 //
 // A TUI-based interface that connects to a Temporal workflow,
 // shows conversation items in a scrollable viewport, and lets you type
@@ -20,9 +20,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mfateev/codex-temporal-go/internal/cli"
-	"github.com/mfateev/codex-temporal-go/internal/instructions"
-	"github.com/mfateev/codex-temporal-go/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/cli"
+	"github.com/mfateev/temporal-agent-harness/internal/instructions"
+	"github.com/mfateev/temporal-agent-harness/internal/models"
 )
 
 func main() {

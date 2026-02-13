@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mfateev/codex-temporal-go/internal/workflow"
+	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
 // UserInputSelectionToResponse maps a selector index to a UserInputQuestionResponse.
