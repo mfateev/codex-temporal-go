@@ -288,8 +288,8 @@ func TestItemRenderer_RenderApprovalPrompt(t *testing.T) {
 		{CallID: "c2", ToolName: "write_file", Arguments: `{"file_path": "/etc/passwd"}`},
 	})
 
-	assert.Contains(t, result, "shell")
-	assert.Contains(t, result, "write_file")
+	assert.Contains(t, result, "Shell: rm -rf /")
+	assert.Contains(t, result, "Write file: /etc/passwd")
 	assert.Contains(t, result, "dangerous")
 	assert.Contains(t, result, "1,2 (select by index)")
 }
@@ -300,8 +300,22 @@ func TestItemRenderer_RenderApprovalPromptSingle(t *testing.T) {
 		{CallID: "c1", ToolName: "shell", Arguments: `{"command": "ls"}`},
 	})
 
-	assert.Contains(t, result, "shell")
+	assert.Contains(t, result, "Shell: ls")
 	assert.NotContains(t, result, "select by index")
+}
+
+func TestItemRenderer_RenderApprovalPromptWithPreview(t *testing.T) {
+	r := newTestRenderer()
+	result := r.RenderApprovalPrompt([]workflow.PendingApproval{
+		{CallID: "c1", ToolName: "write_file", Arguments: `{"file_path": "/tmp/test.go", "content": "package main\n\nfunc main() {}\n"}`, Reason: "mutating file"},
+	})
+
+	assert.Contains(t, result, "Write file: /tmp/test.go")
+	assert.Contains(t, result, "╭─")
+	assert.Contains(t, result, "│")
+	assert.Contains(t, result, "╰─")
+	assert.Contains(t, result, "package main")
+	assert.Contains(t, result, "mutating file")
 }
 
 func TestItemRenderer_RenderEscalationPrompt(t *testing.T) {
@@ -311,7 +325,7 @@ func TestItemRenderer_RenderEscalationPrompt(t *testing.T) {
 	})
 
 	assert.Contains(t, result, "Sandbox failure")
-	assert.Contains(t, result, "shell")
+	assert.Contains(t, result, "Shell: ls")
 	assert.Contains(t, result, "permission denied")
 }
 

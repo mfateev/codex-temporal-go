@@ -167,41 +167,54 @@ func EscalationSelectionToResponse(selected int, pending []workflow.EscalationRe
 	}
 }
 
-// formatApprovalDetail extracts a human-readable detail string from tool arguments.
-func formatApprovalDetail(toolName, arguments string) string {
+// approvalInfo holds structured information extracted from tool arguments
+// for rendering in approval prompts.
+type approvalInfo struct {
+	Title   string   // e.g. "Write file: /path/to/file.go" or "Shell: rm -rf /tmp"
+	Preview []string // optional content preview lines (nil = no preview box)
+}
+
+// formatApprovalInfo extracts structured approval information from tool arguments.
+func formatApprovalInfo(toolName, arguments string) approvalInfo {
 	var args map[string]interface{}
 	if json.Unmarshal([]byte(arguments), &args) == nil {
 		switch toolName {
 		case "shell":
 			if cmd, ok := args["command"].(string); ok {
-				return "Command: " + cmd
+				return approvalInfo{Title: "Shell: " + cmd}
 			}
 		case "write_file":
-			if path, ok := args["file_path"].(string); ok {
-				return "Path: " + path
+			if path := stringArg(args, "file_path", "path"); path != "" {
+				info := approvalInfo{Title: "Write file: " + path}
+				if content, ok := args["content"].(string); ok && content != "" {
+					info.Preview = contentPreview(content, 5)
+				}
+				return info
 			}
 		case "apply_patch":
-			if path, ok := args["file_path"].(string); ok {
-				return "Path: " + path
+			info := approvalInfo{Title: "Patch"}
+			if path := stringArg(args, "file_path"); path != "" {
+				info.Title = "Patch: " + path
 			}
+			if input, ok := args["input"].(string); ok && input != "" {
+				info.Preview = contentPreview(input, 5)
+			}
+			return info
 		case "read_file":
-			if path, ok := args["file_path"].(string); ok {
-				return "Path: " + path
+			if path := stringArg(args, "file_path", "path"); path != "" {
+				return approvalInfo{Title: "Read: " + path}
 			}
 		case "list_dir":
-			if path, ok := args["dir_path"].(string); ok {
-				return "Path: " + path
-			}
-			if path, ok := args["path"].(string); ok {
-				return "Path: " + path
+			if path := stringArg(args, "dir_path", "path"); path != "" {
+				return approvalInfo{Title: "List: " + path}
 			}
 		case "grep_files":
 			if pat, ok := args["pattern"].(string); ok {
-				detail := "Pattern: " + pat
+				title := "Search: " + pat
 				if dir, ok := args["path"].(string); ok {
-					detail += " in " + dir
+					title += " in " + dir
 				}
-				return detail
+				return approvalInfo{Title: title}
 			}
 		}
 	}
@@ -209,7 +222,25 @@ func formatApprovalDetail(toolName, arguments string) string {
 	if len(display) > 300 {
 		display = display[:300] + "..."
 	}
-	return "Args: " + display
+	return approvalInfo{Title: toolName + ": " + display}
+}
+
+// contentPreview splits content into lines and returns at most maxLines,
+// using middle truncation if the content exceeds the limit.
+func contentPreview(content string, maxLines int) []string {
+	lines := strings.Split(content, "\n")
+	truncated, _ := truncateMiddle(lines, maxLines)
+	return truncated
+}
+
+// stringArg returns the first non-empty string value found among the given keys.
+func stringArg(args map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := args[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // pollErrorKind classifies errors from workflow queries.

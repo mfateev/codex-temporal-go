@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -132,39 +133,81 @@ func TestHandleApprovalInput_WithWhitespace(t *testing.T) {
 	assert.Equal(t, []string{"c1"}, resp.Approved)
 }
 
-func TestFormatApprovalDetail_Shell(t *testing.T) {
-	detail := formatApprovalDetail("shell", `{"command": "rm -rf /tmp"}`)
-	assert.Equal(t, "Command: rm -rf /tmp", detail)
+func TestFormatApprovalInfo_Shell(t *testing.T) {
+	info := formatApprovalInfo("shell", `{"command": "rm -rf /tmp"}`)
+	assert.Equal(t, "Shell: rm -rf /tmp", info.Title)
+	assert.Nil(t, info.Preview)
 }
 
-func TestFormatApprovalDetail_WriteFile(t *testing.T) {
-	detail := formatApprovalDetail("write_file", `{"file_path": "/home/user/test.txt", "content": "hello"}`)
-	assert.Equal(t, "Path: /home/user/test.txt", detail)
+func TestFormatApprovalInfo_WriteFile(t *testing.T) {
+	info := formatApprovalInfo("write_file", `{"file_path": "/home/user/test.txt", "content": "hello"}`)
+	assert.Equal(t, "Write file: /home/user/test.txt", info.Title)
+	require.NotNil(t, info.Preview)
+	assert.Equal(t, []string{"hello"}, info.Preview)
 }
 
-func TestFormatApprovalDetail_ApplyPatch(t *testing.T) {
-	detail := formatApprovalDetail("apply_patch", `{"file_path": "/home/user/test.txt"}`)
-	assert.Equal(t, "Path: /home/user/test.txt", detail)
+func TestFormatApprovalInfo_WriteFilePathArg(t *testing.T) {
+	info := formatApprovalInfo("write_file", `{"path": "/home/user/test.txt", "content": "hello"}`)
+	assert.Equal(t, "Write file: /home/user/test.txt", info.Title)
+	require.NotNil(t, info.Preview)
+	assert.Equal(t, []string{"hello"}, info.Preview)
 }
 
-func TestFormatApprovalDetail_UnknownTool(t *testing.T) {
-	detail := formatApprovalDetail("custom_tool", `{"foo": "bar"}`)
-	assert.Equal(t, `Args: {"foo": "bar"}`, detail)
+func TestFormatApprovalInfo_WriteFileNoContent(t *testing.T) {
+	info := formatApprovalInfo("write_file", `{"file_path": "/home/user/test.txt"}`)
+	assert.Equal(t, "Write file: /home/user/test.txt", info.Title)
+	assert.Nil(t, info.Preview)
 }
 
-func TestFormatApprovalDetail_BadJSON(t *testing.T) {
-	detail := formatApprovalDetail("shell", `{bad json`)
-	assert.Contains(t, detail, "Args:")
-}
-
-func TestFormatApprovalDetail_LongArgs(t *testing.T) {
-	longArg := ""
-	for i := 0; i < 400; i++ {
-		longArg += "x"
+func TestFormatApprovalInfo_WriteFileMultiLine(t *testing.T) {
+	content := "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8"
+	args := fmt.Sprintf(`{"file_path": "/home/user/test.go", "content": %q}`, content)
+	info := formatApprovalInfo("write_file", args)
+	assert.Equal(t, "Write file: /home/user/test.go", info.Title)
+	require.NotNil(t, info.Preview)
+	assert.LessOrEqual(t, len(info.Preview), 5)
+	assert.Equal(t, "line1", info.Preview[0])
+	// Middle lines should be truncated with "… +N lines"
+	found := false
+	for _, line := range info.Preview {
+		if strings.HasPrefix(line, "…") {
+			found = true
+		}
 	}
-	detail := formatApprovalDetail("custom_tool", longArg)
-	assert.Contains(t, detail, "...")
-	assert.LessOrEqual(t, len(detail), 310) // "Args: " + 300 + "..."
+	assert.True(t, found, "expected middle truncation marker")
+}
+
+func TestFormatApprovalInfo_ApplyPatch(t *testing.T) {
+	info := formatApprovalInfo("apply_patch", `{"file_path": "/home/user/test.txt"}`)
+	assert.Equal(t, "Patch: /home/user/test.txt", info.Title)
+	assert.Nil(t, info.Preview)
+}
+
+func TestFormatApprovalInfo_ApplyPatchWithInput(t *testing.T) {
+	input := "*** Begin Patch\n*** Update File: test.go\n@@ line1 @@\n- old\n+ new\n*** End Patch"
+	args := fmt.Sprintf(`{"input": %q}`, input)
+	info := formatApprovalInfo("apply_patch", args)
+	assert.Equal(t, "Patch", info.Title)
+	require.NotNil(t, info.Preview)
+	assert.Equal(t, "*** Begin Patch", info.Preview[0])
+}
+
+func TestFormatApprovalInfo_UnknownTool(t *testing.T) {
+	info := formatApprovalInfo("custom_tool", `{"foo": "bar"}`)
+	assert.Contains(t, info.Title, "custom_tool")
+	assert.Nil(t, info.Preview)
+}
+
+func TestFormatApprovalInfo_BadJSON(t *testing.T) {
+	info := formatApprovalInfo("shell", `{bad json`)
+	assert.Contains(t, info.Title, "shell")
+}
+
+func TestFormatApprovalInfo_LongArgs(t *testing.T) {
+	longArg := strings.Repeat("x", 400)
+	info := formatApprovalInfo("custom_tool", longArg)
+	assert.Contains(t, info.Title, "...")
+	assert.LessOrEqual(t, len(info.Title), 320) // "custom_tool: " + 300 + "..."
 }
 
 // --- Index-based approval tests ---
