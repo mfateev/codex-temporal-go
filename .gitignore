@@ -26,3 +26,9 @@ vendor/
 
 # E2E test marker
 .e2e-passed
+
+# TUI tests
+tui-tests/node_modules/
+tui-tests/tui-traces/
+tui-tests/.tui-test/
+tui-tests/__snapshots__/
