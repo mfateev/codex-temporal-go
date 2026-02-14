@@ -3255,5 +3255,219 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_CachedTokensInTurnStatus() {
 	require.True(s.T(), s.env.IsWorkflowCompleted())
 }
 
+// ---------------------------------------------------------------------------
+// update_plan workflow-level tests
+// ---------------------------------------------------------------------------
+
+// mockLLMUpdatePlanResponse returns an LLM response with a single update_plan tool call.
+func mockLLMUpdatePlanResponse(callID string, argsJSON string, tokens int) activities.LLMActivityOutput {
+	return activities.LLMActivityOutput{
+		Items: []models.ConversationItem{
+			{
+				Type:      models.ItemTypeFunctionCall,
+				CallID:    callID,
+				Name:      "update_plan",
+				Arguments: argsJSON,
+			},
+		},
+		FinishReason: models.FinishReasonToolCalls,
+		TokenUsage:   models.TokenUsage{TotalTokens: tokens},
+	}
+}
+
+// validPlanArgs returns valid update_plan arguments JSON.
+func validPlanArgs() string {
+	return `{"explanation": "Working on it", "plan": [{"step": "Read code", "status": "completed"}, {"step": "Write tests", "status": "in_progress"}, {"step": "Deploy", "status": "pending"}]}`
+}
+
+// TestUpdatePlan_HappyPath verifies the LLM calls update_plan, plan is visible
+// in TurnStatus, and the LLM gets confirmation.
+func (s *AgenticWorkflowTestSuite) TestUpdatePlan_HappyPath() {
+	// First LLM call: update_plan
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMUpdatePlanResponse("call-plan-1", validPlanArgs(), 30), nil).Once()
+
+	// Second LLM call: final response after plan updated
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Plan is set, starting work.", 20), nil).Once()
+
+	// Check TurnStatus for plan after the LLM finishes
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetTurnStatus)
+		require.NoError(s.T(), err)
+
+		var status TurnStatus
+		require.NoError(s.T(), result.Get(&status))
+		require.NotNil(s.T(), status.Plan, "Plan should be populated in TurnStatus")
+		assert.Equal(s.T(), "Working on it", status.Plan.Explanation)
+		require.Len(s.T(), status.Plan.Steps, 3)
+		assert.Equal(s.T(), PlanStepCompleted, status.Plan.Steps[0].Status)
+		assert.Equal(s.T(), PlanStepInProgress, status.Plan.Steps[1].Status)
+		assert.Equal(s.T(), PlanStepPending, status.Plan.Steps[2].Status)
+	}, time.Second*2)
+
+	s.sendShutdown(time.Second * 4)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Plan my task"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Equal(s.T(), 50, result.TotalTokens) // 30 + 20
+
+	// Verify history contains the update_plan response
+	histResult, err := s.env.QueryWorkflow(QueryGetConversationItems)
+	require.NoError(s.T(), err)
+	var items []models.ConversationItem
+	require.NoError(s.T(), histResult.Get(&items))
+
+	var foundOutput bool
+	for _, item := range items {
+		if item.Type == models.ItemTypeFunctionCallOutput && item.CallID == "call-plan-1" {
+			foundOutput = true
+			require.NotNil(s.T(), item.Output)
+			assert.True(s.T(), *item.Output.Success)
+			assert.Contains(s.T(), item.Output.Content, "Plan updated")
+		}
+	}
+	assert.True(s.T(), foundOutput, "Should have FunctionCallOutput for update_plan")
+}
+
+// TestUpdatePlan_InvalidArgs verifies malformed JSON returns an error
+// as tool output instead of crashing the workflow.
+func (s *AgenticWorkflowTestSuite) TestUpdatePlan_InvalidArgs() {
+	// LLM sends invalid args
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMUpdatePlanResponse("call-bad-plan", `{invalid json`, 20), nil).Once()
+
+	// LLM gets the error and responds
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("I see, let me fix that.", 25), nil).Once()
+
+	s.sendShutdown(time.Second * 3)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Plan something"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+
+	// Verify error output was added to history
+	histResult, err := s.env.QueryWorkflow(QueryGetConversationItems)
+	require.NoError(s.T(), err)
+	var items []models.ConversationItem
+	require.NoError(s.T(), histResult.Get(&items))
+
+	var foundError bool
+	for _, item := range items {
+		if item.Type == models.ItemTypeFunctionCallOutput && item.CallID == "call-bad-plan" {
+			foundError = true
+			require.NotNil(s.T(), item.Output)
+			assert.False(s.T(), *item.Output.Success)
+			assert.Contains(s.T(), item.Output.Content, "Invalid update_plan arguments")
+		}
+	}
+	assert.True(s.T(), foundError, "Should have error FunctionCallOutput for invalid args")
+}
+
+// TestUpdatePlan_WithNormalTools verifies that update_plan (intercepted) and
+// normal tool calls in the same response are handled correctly.
+func (s *AgenticWorkflowTestSuite) TestUpdatePlan_WithNormalTools() {
+	// LLM returns both update_plan AND a shell call
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(activities.LLMActivityOutput{
+			Items: []models.ConversationItem{
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-plan-2",
+					Name:      "update_plan",
+					Arguments: validPlanArgs(),
+				},
+				{
+					Type:      models.ItemTypeFunctionCall,
+					CallID:    "call-shell",
+					Name:      "shell_command",
+					Arguments: `{"command": "echo hello"}`,
+				},
+			},
+			FinishReason: models.FinishReasonToolCalls,
+			TokenUsage:   models.TokenUsage{TotalTokens: 40},
+		}, nil).Once()
+
+	// Shell tool execution
+	s.env.OnActivity("ExecuteTool", mock.Anything, mock.MatchedBy(func(input activities.ToolActivityInput) bool {
+		return input.ToolName == "shell_command"
+	})).Return(activities.ToolActivityOutput{
+		CallID:  "call-shell",
+		Content: "hello\n",
+	}, nil).Once()
+
+	// Second LLM call after both tools complete
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Done with both plan and shell.", 30), nil).Once()
+
+	s.sendShutdown(time.Second * 4)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Do stuff"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+
+	// Verify both tool outputs in history
+	histResult, err := s.env.QueryWorkflow(QueryGetConversationItems)
+	require.NoError(s.T(), err)
+	var items []models.ConversationItem
+	require.NoError(s.T(), histResult.Get(&items))
+
+	var foundPlan, foundShell bool
+	for _, item := range items {
+		if item.Type == models.ItemTypeFunctionCallOutput {
+			if item.CallID == "call-plan-2" {
+				foundPlan = true
+				require.NotNil(s.T(), item.Output)
+				assert.True(s.T(), *item.Output.Success)
+			}
+			if item.CallID == "call-shell" {
+				foundShell = true
+			}
+		}
+	}
+	assert.True(s.T(), foundPlan, "Should have FunctionCallOutput for update_plan")
+	assert.True(s.T(), foundShell, "Should have FunctionCallOutput for shell_command")
+}
+
+// TestUpdatePlan_ApprovalSkip verifies that update_plan is auto-approved in
+// unless-trusted mode (not requiring user confirmation).
+func (s *AgenticWorkflowTestSuite) TestUpdatePlan_ApprovalSkip() {
+	// First LLM call: update_plan (should be auto-approved)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMUpdatePlanResponse("call-plan-ap", validPlanArgs(), 30), nil).Once()
+
+	// Second LLM call: final response
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Plan set.", 20), nil).Once()
+
+	s.sendShutdown(time.Second * 3)
+
+	// Use unless-trusted approval mode
+	input := testInput("Plan my task with approval")
+	input.Config.ApprovalMode = models.ApprovalUnlessTrusted
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, input)
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+
+	// If update_plan wasn't auto-approved, the workflow would be stuck waiting
+	// for approval. The fact that it completed means it was auto-approved.
+	assert.Equal(s.T(), 50, result.TotalTokens)
+}
+
 // Ensure we reference workflow.Context (suppress unused import warning)
 var _ workflow.Context

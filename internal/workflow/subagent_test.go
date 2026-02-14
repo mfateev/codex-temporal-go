@@ -611,6 +611,64 @@ func specNames(specs []tools.ToolSpec) []string {
 }
 
 // ---------------------------------------------------------------------------
+// buildToolSpecs update_plan tests
+// ---------------------------------------------------------------------------
+
+func TestBuildToolSpecs_UpdatePlan_Enabled(t *testing.T) {
+	specs := buildToolSpecs(models.ToolsConfig{
+		EnableUpdatePlan: true,
+	})
+	names := specNames(specs)
+	assert.Contains(t, names, "update_plan", "update_plan should be present when enabled")
+}
+
+func TestBuildToolSpecs_UpdatePlan_Disabled(t *testing.T) {
+	specs := buildToolSpecs(models.ToolsConfig{
+		EnableUpdatePlan: false,
+	})
+	names := specNames(specs)
+	assert.NotContains(t, names, "update_plan", "update_plan should not be present when disabled")
+}
+
+func TestBuildToolSpecs_UpdatePlan_DefaultConfig(t *testing.T) {
+	specs := buildToolSpecs(models.DefaultToolsConfig())
+	names := specNames(specs)
+	assert.Contains(t, names, "update_plan", "update_plan should be present in default config")
+}
+
+// ---------------------------------------------------------------------------
+// update_plan tool spec tests
+// ---------------------------------------------------------------------------
+
+func TestUpdatePlanToolSpec(t *testing.T) {
+	spec := tools.NewUpdatePlanToolSpec()
+	assert.Equal(t, "update_plan", spec.Name)
+	assert.NotEmpty(t, spec.Description)
+	assert.Len(t, spec.Parameters, 2) // explanation, plan
+
+	for _, p := range spec.Parameters {
+		switch p.Name {
+		case "explanation":
+			assert.False(t, p.Required, "explanation should be optional")
+			assert.Equal(t, "string", p.Type)
+		case "plan":
+			assert.True(t, p.Required, "plan should be required")
+			assert.Equal(t, "array", p.Type)
+			assert.NotNil(t, p.Items, "plan should have item schema")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// update_plan approval skip test
+// ---------------------------------------------------------------------------
+
+func TestUpdatePlanApprovalSkip(t *testing.T) {
+	req, _ := evaluateToolApproval("update_plan", "{}", nil, models.ApprovalUnlessTrusted)
+	assert.Equal(t, tools.ApprovalSkip, req, "update_plan should be auto-approved")
+}
+
+// ---------------------------------------------------------------------------
 // Collab tool spec tests
 // ---------------------------------------------------------------------------
 

@@ -109,7 +109,7 @@ func evaluateToolApproval(
 	}
 
 	switch toolName {
-	case "read_file", "list_dir", "grep_files", "request_user_input":
+	case "read_file", "list_dir", "grep_files", "request_user_input", "update_plan":
 		return tools.ApprovalSkip, "" // Read-only / workflow-intercepted tools always safe
 
 	case "shell":

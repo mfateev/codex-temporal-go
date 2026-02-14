@@ -104,6 +104,7 @@ type TurnStatus struct {
 	TurnCount               int                      `json:"turn_count"`
 	WorkerVersion           string                   `json:"worker_version,omitempty"`
 	Suggestion              string                   `json:"suggestion,omitempty"`
+	Plan                    *PlanState               `json:"plan,omitempty"`
 }
 
 // WorkflowInput is the initial input to start a conversation.
@@ -339,9 +340,37 @@ type SessionState struct {
 	// Transient: post-turn prompt suggestion (not serialized — best-effort)
 	Suggestion string `json:"-"`
 
+	// Plan maintained by the LLM via the update_plan intercepted tool.
+	// Persists across ContinueAsNew and is exposed via get_turn_status.
+	Plan *PlanState `json:"plan,omitempty"`
+
 	// Subagent control — manages child workflow lifecycles.
 	// Maps to: codex-rs/core/src/agent/control.rs AgentControl
 	AgentCtl *AgentControl `json:"agent_ctl,omitempty"`
+}
+
+// PlanStepStatus indicates the status of a single step in a plan.
+// Maps to: Codex update_plan tool status enum
+type PlanStepStatus string
+
+const (
+	PlanStepPending    PlanStepStatus = "pending"
+	PlanStepInProgress PlanStepStatus = "in_progress"
+	PlanStepCompleted  PlanStepStatus = "completed"
+)
+
+// PlanStep is a single step in a plan created by the LLM.
+// Maps to: Codex update_plan tool step schema
+type PlanStep struct {
+	Step   string         `json:"step"`
+	Status PlanStepStatus `json:"status"`
+}
+
+// PlanState holds the current plan maintained by the LLM via update_plan.
+// Maps to: Codex update_plan tool state
+type PlanState struct {
+	Explanation string     `json:"explanation,omitempty"`
+	Steps       []PlanStep `json:"steps"`
 }
 
 // WorkflowResult is the final result of the workflow.

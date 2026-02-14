@@ -49,6 +49,7 @@ type ToolsConfig struct {
 	EnableGrepFiles  bool `json:"enable_grep_files,omitempty"`  // Built-in grep_files tool
 	EnableApplyPatch bool `json:"enable_apply_patch,omitempty"` // Built-in apply_patch tool
 	EnableCollab     bool `json:"enable_collab,omitempty"`      // Collaboration tools (spawn_agent, send_input, wait, close_agent, resume_agent)
+	EnableUpdatePlan bool `json:"enable_update_plan,omitempty"` // update_plan tool (intercepted by workflow, not dispatched)
 
 	// ShellType selects which shell tool variant to expose to the LLM.
 	// When unset, ResolvedShellType() derives the value from EnableShell.
@@ -78,6 +79,7 @@ func DefaultToolsConfig() ToolsConfig {
 		EnableListDir:    true,
 		EnableGrepFiles:  true,
 		EnableApplyPatch: true,
+		EnableUpdatePlan: true,
 	}
 }
 

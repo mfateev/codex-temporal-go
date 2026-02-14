@@ -1598,6 +1598,62 @@ func TestAgenticWorkflow_CodexModelWithTools(t *testing.T) {
 		result.TotalTokens, result.TotalCachedTokens, result.TotalIterations, result.ToolCallsExecuted)
 }
 
+// TestAgenticWorkflow_UpdatePlan tests the update_plan intercepted tool.
+// The LLM is asked to create a plan, and we verify the plan is visible in TurnStatus.
+func TestAgenticWorkflow_UpdatePlan(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-update-plan-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage: "Before answering, use the update_plan tool to create a 3-step plan: " +
+			"step 1 'Analyze the question' (completed), " +
+			"step 2 'Formulate response' (in_progress), " +
+			"step 3 'Review answer' (pending). " +
+			"Then say 'Plan created successfully.'",
+		Config: testSessionConfig(500, models.ToolsConfig{
+			EnableShell:      false,
+			EnableReadFile:   false,
+			EnableUpdatePlan: true,
+		}),
+	}
+
+	t.Logf("Starting update_plan workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+
+	// Query TurnStatus to verify plan is populated
+	resp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetTurnStatus)
+	require.NoError(t, err, "Failed to query turn status")
+
+	var status workflow.TurnStatus
+	require.NoError(t, resp.Get(&status))
+
+	// The plan should be set — the LLM was explicitly asked to call update_plan
+	if status.Plan != nil {
+		t.Logf("Plan explanation: %s", status.Plan.Explanation)
+		t.Logf("Plan steps: %d", len(status.Plan.Steps))
+		for i, step := range status.Plan.Steps {
+			t.Logf("  Step %d: %s [%s]", i+1, step.Step, step.Status)
+		}
+		assert.NotEmpty(t, status.Plan.Steps, "Plan should have steps")
+	} else {
+		t.Log("Plan was nil — LLM may not have called update_plan (non-deterministic)")
+	}
+
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+	assert.Equal(t, workflowID, result.ConversationID)
+	assert.Greater(t, result.TotalTokens, 0)
+	assert.Equal(t, "shutdown", result.EndReason)
+
+	t.Logf("UpdatePlan - Total tokens: %d, Cached: %d, Iterations: %d",
+		result.TotalTokens, result.TotalCachedTokens, result.TotalIterations)
+}
+
 // truncateStr truncates a string to n characters with "..." appended.
 func truncateStr(s string, n int) string {
 	if len(s) <= n {

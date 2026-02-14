@@ -267,6 +267,15 @@ func (s *SessionState) dispatchInterceptedCalls(ctx workflow.Context, calls []mo
 			if addErr := s.History.AddItem(outputItem); addErr != nil {
 				return nil, hadIntercepted, fmt.Errorf("failed to add user input response: %w", addErr)
 			}
+		} else if fc.Name == "update_plan" {
+			hadIntercepted = true
+			outputItem, callErr := s.handleUpdatePlan(ctx, fc)
+			if callErr != nil {
+				return nil, hadIntercepted, callErr
+			}
+			if addErr := s.History.AddItem(outputItem); addErr != nil {
+				return nil, hadIntercepted, fmt.Errorf("failed to add update_plan response: %w", addErr)
+			}
 		} else if isCollabToolCall(fc.Name) {
 			hadIntercepted = true
 			outputItem, callErr := s.handleCollabToolCall(ctx, fc)

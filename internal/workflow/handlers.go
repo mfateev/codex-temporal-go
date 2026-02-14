@@ -42,6 +42,7 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 			TurnCount:               turnCount,
 			WorkerVersion:           version.GitCommit,
 			Suggestion:              s.Suggestion,
+			Plan:                    s.Plan,
 		}
 		// Populate child agent summaries from AgentControl
 		if s.AgentCtl != nil {

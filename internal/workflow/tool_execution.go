@@ -149,6 +149,11 @@ func buildToolSpecs(config models.ToolsConfig) []tools.ToolSpec {
 	// request_user_input is always available (intercepted by workflow, not dispatched)
 	specs = append(specs, tools.NewRequestUserInputToolSpec())
 
+	// update_plan is intercepted by the workflow (not dispatched as an activity)
+	if config.EnableUpdatePlan {
+		specs = append(specs, tools.NewUpdatePlanToolSpec())
+	}
+
 	// Collaboration tools for subagent orchestration (intercepted by workflow)
 	if config.EnableCollab {
 		specs = append(specs,
