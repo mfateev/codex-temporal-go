@@ -54,6 +54,12 @@ type Styles struct {
 	SelectorSelected lipgloss.Style
 	// Selector shortcut hint
 	SelectorShortcut lipgloss.Style
+	// Plan header bullet (● magenta)
+	PlanBullet lipgloss.Style
+	// Plan completed step marker (✓ green)
+	PlanCompleted lipgloss.Style
+	// Plan pending step marker (○ dimmed)
+	PlanPending lipgloss.Style
 }
 
 // DefaultStyles returns styles with colors enabled.
@@ -84,6 +90,9 @@ func DefaultStyles() Styles {
 		SelectorChevron:  lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true),
 		SelectorSelected: lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Bold(true),
 		SelectorShortcut: lipgloss.NewStyle().Faint(true),
+		PlanBullet:       lipgloss.NewStyle().Foreground(lipgloss.Color("5")),   // magenta
+		PlanCompleted:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),   // green
+		PlanPending:      lipgloss.NewStyle().Faint(true),
 	}
 }
 
@@ -115,5 +124,8 @@ func NoColorStyles() Styles {
 		SelectorChevron:  lipgloss.NewStyle(),
 		SelectorSelected: lipgloss.NewStyle(),
 		SelectorShortcut: lipgloss.NewStyle(),
+		PlanBullet:       lipgloss.NewStyle(),
+		PlanCompleted:    lipgloss.NewStyle(),
+		PlanPending:      lipgloss.NewStyle(),
 	}
 }

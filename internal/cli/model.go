@@ -171,6 +171,9 @@ type Model struct {
 	plannerAgentID   string // agent ID of the planner child
 	plannerActive    bool   // whether TUI is attached to the planner child
 
+	// Plan rendering (update_plan tool)
+	lastRenderedPlan *workflow.PlanState
+
 	// Prompt suggestion (ghost text shown as placeholder after turn completes)
 	suggestion string
 
@@ -1148,6 +1151,15 @@ func (m *Model) handleWorkflowStarted(msg WorkflowStartedMsg) (tea.Model, tea.Cm
 			m.lastRenderedSeq = msg.Items[len(msg.Items)-1].Seq
 		}
 
+		// Render plan if resuming a session that had an active plan
+		if msg.Status.Plan != nil && len(msg.Status.Plan.Steps) > 0 {
+			rendered := m.renderer.RenderPlan(msg.Status.Plan)
+			if rendered != "" {
+				m.appendToViewport(rendered)
+			}
+			m.lastRenderedPlan = msg.Status.Plan
+		}
+
 		// Set state based on turn status
 		switch msg.Status.Phase {
 		case workflow.PhaseWaitingForInput:
@@ -1239,6 +1251,15 @@ func (m *Model) handlePollResult(msg PollResultMsg) (tea.Model, tea.Cmd) {
 	m.turnCount = result.Status.TurnCount
 	if result.Status.WorkerVersion != "" {
 		m.workerVersion = result.Status.WorkerVersion
+	}
+
+	// Check for plan changes and render
+	if planChanged(m.lastRenderedPlan, result.Status.Plan) {
+		rendered := m.renderer.RenderPlan(result.Status.Plan)
+		if rendered != "" {
+			m.appendToViewport(rendered)
+		}
+		m.lastRenderedPlan = result.Status.Plan
 	}
 
 	// Check for approval pending
@@ -1572,6 +1593,28 @@ func (m *Model) handleSuggestionPoll(msg SuggestionPollMsg) (tea.Model, tea.Cmd)
 		m.applySuggestion(msg.Suggestion)
 	}
 	return m, nil
+}
+
+// planChanged reports whether the plan has changed between old and new.
+func planChanged(old, new *workflow.PlanState) bool {
+	if old == nil && new == nil {
+		return false
+	}
+	if old == nil || new == nil {
+		return true
+	}
+	if old.Explanation != new.Explanation {
+		return true
+	}
+	if len(old.Steps) != len(new.Steps) {
+		return true
+	}
+	for i := range old.Steps {
+		if old.Steps[i].Step != new.Steps[i].Step || old.Steps[i].Status != new.Steps[i].Status {
+			return true
+		}
+	}
+	return false
 }
 
 // Run is the main entry point for the CLI.

@@ -844,3 +844,100 @@ func TestModel_TurnCompleteNoSuggestionPollWhenDisabled(t *testing.T) {
 	// We can't easily test what commands are in a batch, but we verify no suggestion is set.
 	assert.Equal(t, "", m.suggestion)
 }
+
+// --- Plan change detection tests ---
+
+func TestPlanChanged(t *testing.T) {
+	tests := []struct {
+		name    string
+		old     *workflow.PlanState
+		new     *workflow.PlanState
+		changed bool
+	}{
+		{
+			name:    "both nil",
+			old:     nil,
+			new:     nil,
+			changed: false,
+		},
+		{
+			name: "nil to set",
+			old:  nil,
+			new: &workflow.PlanState{
+				Steps: []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepPending}},
+			},
+			changed: true,
+		},
+		{
+			name: "set to nil",
+			old: &workflow.PlanState{
+				Steps: []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepPending}},
+			},
+			new:     nil,
+			changed: true,
+		},
+		{
+			name: "same",
+			old: &workflow.PlanState{
+				Explanation: "plan",
+				Steps:       []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepPending}},
+			},
+			new: &workflow.PlanState{
+				Explanation: "plan",
+				Steps:       []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepPending}},
+			},
+			changed: false,
+		},
+		{
+			name: "status changed",
+			old: &workflow.PlanState{
+				Steps: []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepPending}},
+			},
+			new: &workflow.PlanState{
+				Steps: []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepCompleted}},
+			},
+			changed: true,
+		},
+		{
+			name: "text changed",
+			old: &workflow.PlanState{
+				Steps: []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepPending}},
+			},
+			new: &workflow.PlanState{
+				Steps: []workflow.PlanStep{{Step: "b", Status: workflow.PlanStepPending}},
+			},
+			changed: true,
+		},
+		{
+			name: "length changed",
+			old: &workflow.PlanState{
+				Steps: []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepPending}},
+			},
+			new: &workflow.PlanState{
+				Steps: []workflow.PlanStep{
+					{Step: "a", Status: workflow.PlanStepPending},
+					{Step: "b", Status: workflow.PlanStepPending},
+				},
+			},
+			changed: true,
+		},
+		{
+			name: "explanation changed",
+			old: &workflow.PlanState{
+				Explanation: "old",
+				Steps:       []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepPending}},
+			},
+			new: &workflow.PlanState{
+				Explanation: "new",
+				Steps:       []workflow.PlanStep{{Step: "a", Status: workflow.PlanStepPending}},
+			},
+			changed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.changed, planChanged(tt.old, tt.new))
+		})
+	}
+}

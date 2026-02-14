@@ -313,6 +313,39 @@ func (r *ItemRenderer) RenderUserInputQuestionContext(req *workflow.PendingUserI
 	return b.String()
 }
 
+// RenderPlan renders the plan state as a block in the viewport.
+// Returns empty string if plan is nil or has no steps.
+func (r *ItemRenderer) RenderPlan(plan *workflow.PlanState) string {
+	if plan == nil || len(plan.Steps) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	bullet := r.styles.PlanBullet.Render("●")
+	label := r.styles.ToolVerb.Render("Plan")
+	if plan.Explanation != "" {
+		b.WriteString("\n" + bullet + " " + label + ": " + plan.Explanation + "\n")
+	} else {
+		b.WriteString("\n" + bullet + " " + label + "\n")
+	}
+
+	for _, step := range plan.Steps {
+		switch step.Status {
+		case workflow.PlanStepCompleted:
+			marker := r.styles.PlanCompleted.Render("✓")
+			b.WriteString("  " + marker + " " + step.Step + "\n")
+		case workflow.PlanStepInProgress:
+			marker := r.styles.ToolBullet.Render("●")
+			b.WriteString("  " + marker + " " + step.Step + "\n")
+		default: // pending
+			marker := r.styles.PlanPending.Render("○")
+			b.WriteString("  " + marker + " " + step.Step + "\n")
+		}
+	}
+
+	return b.String()
+}
+
 // RenderStatusLine renders a summary status after a turn completes.
 func (r *ItemRenderer) RenderStatusLine(model string, totalTokens, turnCount int) string {
 	line := fmt.Sprintf("[%s · %s tokens · turn %d]",
@@ -397,6 +430,8 @@ func formatToolCall(name, argsJSON string) (verb, detail string) {
 		return "Searched", ""
 	case "request_user_input":
 		return "Asked", "user a question"
+	case "update_plan":
+		return "Updated", "plan"
 	default:
 		detail := name + "(" + truncateString(argsJSON, 80) + ")"
 		return "Ran", detail

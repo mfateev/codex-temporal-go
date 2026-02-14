@@ -660,3 +660,64 @@ func TestPhaseMessage_Compacting(t *testing.T) {
 	result := PhaseMessage(workflow.PhaseCompacting, nil)
 	assert.Equal(t, "Compacting context...", result)
 }
+
+// --- Plan rendering tests ---
+
+func TestItemRenderer_RenderPlan(t *testing.T) {
+	r := newTestRenderer()
+	plan := &workflow.PlanState{
+		Explanation: "Working on it",
+		Steps: []workflow.PlanStep{
+			{Step: "Read existing code", Status: workflow.PlanStepCompleted},
+			{Step: "Write migration script", Status: workflow.PlanStepInProgress},
+			{Step: "Run tests", Status: workflow.PlanStepPending},
+		},
+	}
+	result := r.RenderPlan(plan)
+
+	assert.Contains(t, result, "●")
+	assert.Contains(t, result, "Plan")
+	assert.Contains(t, result, "Working on it")
+	assert.Contains(t, result, "✓")
+	assert.Contains(t, result, "Read existing code")
+	assert.Contains(t, result, "Write migration script")
+	assert.Contains(t, result, "○")
+	assert.Contains(t, result, "Run tests")
+}
+
+func TestItemRenderer_RenderPlanNil(t *testing.T) {
+	r := newTestRenderer()
+	result := r.RenderPlan(nil)
+	assert.Empty(t, result)
+}
+
+func TestItemRenderer_RenderPlanEmpty(t *testing.T) {
+	r := newTestRenderer()
+	plan := &workflow.PlanState{
+		Explanation: "Nothing yet",
+		Steps:       []workflow.PlanStep{},
+	}
+	result := r.RenderPlan(plan)
+	assert.Empty(t, result)
+}
+
+func TestItemRenderer_RenderPlanNoExplanation(t *testing.T) {
+	r := newTestRenderer()
+	plan := &workflow.PlanState{
+		Steps: []workflow.PlanStep{
+			{Step: "Do something", Status: workflow.PlanStepPending},
+		},
+	}
+	result := r.RenderPlan(plan)
+
+	assert.Contains(t, result, "Plan")
+	assert.NotContains(t, result, ":")
+	assert.Contains(t, result, "○")
+	assert.Contains(t, result, "Do something")
+}
+
+func TestFormatToolCall_UpdatePlan(t *testing.T) {
+	verb, detail := formatToolCall("update_plan", `{"steps": []}`)
+	assert.Equal(t, "Updated", verb)
+	assert.Equal(t, "plan", detail)
+}
