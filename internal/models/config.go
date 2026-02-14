@@ -23,6 +23,21 @@ func DefaultModelConfig() ModelConfig {
 	}
 }
 
+// ShellToolType selects which shell tool variant the LLM sees.
+//
+// Maps to: codex-rs/core/src/config.rs ShellTool enum
+type ShellToolType string
+
+const (
+	// ShellToolDefault selects the array-based "shell" tool (direct execvp).
+	ShellToolDefault ShellToolType = "default"
+	// ShellToolShellCommand selects the string-based "shell_command" tool
+	// (user's detected shell with login flag).
+	ShellToolShellCommand ShellToolType = "shell_command"
+	// ShellToolDisabled disables the shell tool entirely.
+	ShellToolDisabled ShellToolType = "disabled"
+)
+
 // ToolsConfig configures which tools are enabled
 //
 // Maps to: codex-rs/core/src/codex.rs SessionConfiguration (tools config part)
@@ -34,6 +49,24 @@ type ToolsConfig struct {
 	EnableGrepFiles  bool `json:"enable_grep_files,omitempty"`  // Built-in grep_files tool
 	EnableApplyPatch bool `json:"enable_apply_patch,omitempty"` // Built-in apply_patch tool
 	EnableCollab     bool `json:"enable_collab,omitempty"`      // Collaboration tools (spawn_agent, send_input, wait, close_agent, resume_agent)
+
+	// ShellType selects which shell tool variant to expose to the LLM.
+	// When unset, ResolvedShellType() derives the value from EnableShell.
+	ShellType ShellToolType `json:"shell_type,omitempty"`
+}
+
+// ResolvedShellType returns the effective shell tool type.
+// If ShellType is explicitly set it is used directly.
+// Otherwise EnableShell=true maps to ShellToolShellCommand (backward compat),
+// and EnableShell=false maps to ShellToolDisabled.
+func (c ToolsConfig) ResolvedShellType() ShellToolType {
+	if c.ShellType != "" {
+		return c.ShellType
+	}
+	if c.EnableShell {
+		return ShellToolShellCommand
+	}
+	return ShellToolDisabled
 }
 
 // DefaultToolsConfig returns default tools configuration

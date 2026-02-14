@@ -117,8 +117,13 @@ func executeToolsInParallel(ctx workflow.Context, functionCalls []models.Convers
 func buildToolSpecs(config models.ToolsConfig) []tools.ToolSpec {
 	specs := []tools.ToolSpec{}
 
-	if config.EnableShell {
-		specs = append(specs, tools.NewShellToolSpec())
+	switch config.ResolvedShellType() {
+	case models.ShellToolDefault:
+		specs = append(specs, tools.NewShellToolSpec(false))
+	case models.ShellToolShellCommand:
+		specs = append(specs, tools.NewShellCommandToolSpec(false))
+	case models.ShellToolDisabled:
+		// no shell tool
 	}
 
 	if config.EnableReadFile {

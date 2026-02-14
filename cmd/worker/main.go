@@ -58,7 +58,8 @@ func main() {
 	// Create tool registry with handlers
 	// Maps to: codex-rs/core/src/tools/registry.rs ToolRegistry setup
 	toolRegistry := tools.NewToolRegistry()
-	toolRegistry.Register(handlers.NewShellTool())
+	toolRegistry.Register(handlers.NewShellHandler())        // array-based "shell"
+	toolRegistry.Register(handlers.NewShellCommandHandler()) // string-based "shell_command"
 	toolRegistry.Register(handlers.NewReadFileTool())
 	toolRegistry.Register(handlers.NewWriteFileTool())
 	toolRegistry.Register(handlers.NewListDirTool())
