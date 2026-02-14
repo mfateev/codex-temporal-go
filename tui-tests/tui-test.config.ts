@@ -5,5 +5,5 @@ export default defineConfig({
   expect: { timeout: 60_000 },
   retries: 1,
   trace: true,
-  workers: 1,
+  workers: 10,
 });
