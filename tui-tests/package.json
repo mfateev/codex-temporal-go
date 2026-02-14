@@ -1,0 +1,14 @@
+{
+  "name": "temporal-agent-harness-tui-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TUI end-to-end tests for tcx using @microsoft/tui-test",
+  "scripts": {
+    "test": "npx @microsoft/tui-test"
+  },
+  "devDependencies": {
+    "@microsoft/tui-test": "0.0.1-rc.5",
+    "typescript": "^5.7.0"
+  }
+}
