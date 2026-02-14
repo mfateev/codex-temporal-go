@@ -11,6 +11,7 @@ import (
 
 	"github.com/mfateev/temporal-agent-harness/internal/execpolicy"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/shell"
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
@@ -112,7 +113,10 @@ func evaluateToolApproval(
 		return tools.ApprovalSkip, "" // Read-only / workflow-intercepted tools always safe
 
 	case "shell":
-		return evaluateShellApproval(arguments, policyMgr, mode)
+		return evaluateShellArrayApproval(arguments, policyMgr, mode)
+
+	case "shell_command":
+		return evaluateShellCommandApproval(arguments, policyMgr, mode)
 
 	case "write_file", "apply_patch":
 		if mode == models.ApprovalNever {
@@ -128,8 +132,38 @@ func evaluateToolApproval(
 	}
 }
 
-// evaluateShellApproval evaluates a shell tool call through the exec policy engine.
-func evaluateShellApproval(
+// evaluateShellArrayApproval evaluates the array-based "shell" tool call
+// through the exec policy engine. The command argument is []interface{} → []string.
+func evaluateShellArrayApproval(
+	arguments string,
+	policyMgr *execpolicy.ExecPolicyManager,
+	mode models.ApprovalMode,
+) (tools.ExecApprovalRequirement, string) {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return tools.ApprovalNeeded, "cannot parse arguments"
+	}
+
+	cmdArr, ok := args["command"].([]interface{})
+	if !ok || len(cmdArr) == 0 {
+		return tools.ApprovalNeeded, "missing command"
+	}
+	cmdVec := make([]string, len(cmdArr))
+	for i, v := range cmdArr {
+		s, ok := v.(string)
+		if !ok {
+			return tools.ApprovalNeeded, "command array contains non-string element"
+		}
+		cmdVec[i] = s
+	}
+
+	return evaluateCommandVecApproval(cmdVec, policyMgr, mode)
+}
+
+// evaluateShellCommandApproval evaluates the string-based "shell_command" tool
+// call through the exec policy engine. The command string is wrapped via the
+// user's detected shell (with optional login flag).
+func evaluateShellCommandApproval(
 	arguments string,
 	policyMgr *execpolicy.ExecPolicyManager,
 	mode models.ApprovalMode,
@@ -143,23 +177,42 @@ func evaluateShellApproval(
 		return tools.ApprovalNeeded, "missing command"
 	}
 
+	// Derive exec args through the user's detected shell.
+	login := true
+	if loginVal, ok := args["login"].(bool); ok {
+		login = loginVal
+	}
+	userShell := shell.DetectUserShell()
+	cmdVec := userShell.DeriveExecArgs(cmd, login)
+
+	return evaluateCommandVecApproval(cmdVec, policyMgr, mode)
+}
+
+// evaluateCommandVecApproval is the shared approval path for a fully-resolved
+// command vector (used by both shell and shell_command approval).
+func evaluateCommandVecApproval(
+	cmdVec []string,
+	policyMgr *execpolicy.ExecPolicyManager,
+	mode models.ApprovalMode,
+) (tools.ExecApprovalRequirement, string) {
 	// Use exec policy if available
 	if policyMgr != nil {
-		eval := policyMgr.GetEvaluation([]string{"bash", "-c", cmd}, string(mode))
+		eval := policyMgr.GetEvaluation(cmdVec, string(mode))
 		req := decisionToApprovalReq(eval.Decision)
 		return req, eval.Justification
 	}
 
-	// Fallback to heuristic (same as before exec policy was added)
+	// Fallback to heuristic
 	if mode == models.ApprovalNever || mode == "" {
 		return tools.ApprovalSkip, ""
 	}
 	if mode == models.ApprovalOnFailure {
 		return tools.ApprovalSkip, "" // runs in sandbox
 	}
-	// unless-trusted: use command_safety heuristic
+	// unless-trusted: use EvaluateCommand which handles both
+	// ["bash", "-lc", "cmd"] and direct ["git", "status"] formats.
 	mgr := execpolicy.NewExecPolicyManager(execpolicy.NewPolicy())
-	return mgr.EvaluateShellCommand(cmd, string(mode)), ""
+	return mgr.EvaluateCommand(cmdVec, string(mode)), ""
 }
 
 // decisionToApprovalReq maps a policy Decision to ExecApprovalRequirement.

@@ -426,7 +426,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ContinueAsNewPreservesState() {
 		CurrentTurnID:     "turn-1",
 		TotalTokens:       100,
 		TotalCachedTokens: 30,
-		ToolCallsExecuted: []string{"shell"},
+		ToolCallsExecuted: []string{"shell_command"},
 	}
 
 	s.env.RegisterWorkflow(AgenticWorkflowContinued)
@@ -459,7 +459,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ContinueAsNewPreservesState() {
 	assert.Equal(s.T(), 150, result.TotalTokens)
 	// TotalCachedTokens should include the original 30 + new 20
 	assert.Equal(s.T(), 50, result.TotalCachedTokens)
-	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_MultipleTurns tests a 3-turn conversation end-to-end.
@@ -507,7 +507,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ToolCallsWithinTurn() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-1",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "echo hello"}`,
 				},
 			},
@@ -537,7 +537,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ToolCallsWithinTurn() {
 	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
 	assert.Equal(s.T(), "shutdown", result.EndReason)
 	assert.Equal(s.T(), 70, result.TotalTokens) // 30 + 40
-	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_SeqFieldsAssigned verifies that Seq fields are monotonically
@@ -628,7 +628,7 @@ func TestSessionState_MultiTurnFieldsSerialize(t *testing.T) {
 		CurrentTurnID:     "turn-99",
 		TotalTokens:       500,
 		TotalCachedTokens: 150,
-		ToolCallsExecuted: []string{"shell", "read_file"},
+		ToolCallsExecuted: []string{"shell_command", "read_file"},
 	}
 
 	assert.True(t, state.PendingUserInput)
@@ -637,7 +637,7 @@ func TestSessionState_MultiTurnFieldsSerialize(t *testing.T) {
 	assert.Equal(t, "turn-99", state.CurrentTurnID)
 	assert.Equal(t, 500, state.TotalTokens)
 	assert.Equal(t, 150, state.TotalCachedTokens)
-	assert.Equal(t, []string{"shell", "read_file"}, state.ToolCallsExecuted)
+	assert.Equal(t, []string{"shell_command", "read_file"}, state.ToolCallsExecuted)
 }
 
 // TestMultiTurn_ContextOverflow_CompactsAndRetries verifies that a ContextOverflow
@@ -827,7 +827,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_Approve() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-rm",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "rm -rf /tmp/test"}`,
 				},
 			},
@@ -863,7 +863,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_Approve() {
 	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
 	assert.Equal(s.T(), "shutdown", result.EndReason)
 	assert.Equal(s.T(), 70, result.TotalTokens) // 30 + 40
-	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_ApprovalGate_Deny verifies that denying a tool call
@@ -877,7 +877,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_Deny() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-rm",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "rm -rf /tmp/test"}`,
 				},
 			},
@@ -914,7 +914,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_Deny() {
 	assert.Equal(s.T(), "shutdown", result.EndReason)
 	assert.Equal(s.T(), 55, result.TotalTokens) // 30 + 25
 	// Tool should NOT be in executed list
-	assert.NotContains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.NotContains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_ApprovalGate_SafeCommand verifies that safe (read-only) commands
@@ -927,7 +927,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_SafeCommand() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-ls",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "ls -la"}`,
 				},
 			},
@@ -958,7 +958,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_SafeCommand() {
 	var result WorkflowResult
 	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
 	assert.Equal(s.T(), "shutdown", result.EndReason)
-	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_ApprovalGate_NeverMode verifies that in "never" mode,
@@ -971,7 +971,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_NeverMode() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-rm",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "rm -rf /tmp/test"}`,
 				},
 			},
@@ -1001,7 +1001,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_NeverMode() {
 	var result WorkflowResult
 	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
 	assert.Equal(s.T(), "shutdown", result.EndReason)
-	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_ApprovalGate_BackwardCompat verifies that empty ApprovalMode
@@ -1014,7 +1014,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_BackwardCompat() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-rm",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "rm -rf /tmp/test"}`,
 				},
 			},
@@ -1042,7 +1042,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_BackwardCompat() {
 	var result WorkflowResult
 	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
 	assert.Equal(s.T(), "shutdown", result.EndReason)
-	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_ApprovalGate_InterruptDuringApproval verifies that interrupting
@@ -1055,7 +1055,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_InterruptDuringApp
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-rm",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "rm -rf /tmp/test"}`,
 				},
 			},
@@ -1089,7 +1089,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_InterruptDuringApp
 	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
 	assert.Equal(s.T(), "shutdown", result.EndReason)
 	// rm should NOT be in executed list (was interrupted)
-	assert.NotContains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.NotContains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_ApprovalGate_ValidatorRejectsWhenNotPending verifies that
@@ -1125,7 +1125,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_ValidatorRejectsWh
 
 func TestClassifyToolsForApproval_NeverMode(t *testing.T) {
 	calls := []models.ConversationItem{
-		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell_command", Arguments: `{"command": "rm -rf /"}`},
 	}
 	pending, forbidden := classifyToolsForApproval(calls, models.ApprovalNever, "")
 	assert.Nil(t, pending)
@@ -1134,7 +1134,7 @@ func TestClassifyToolsForApproval_NeverMode(t *testing.T) {
 
 func TestClassifyToolsForApproval_EmptyMode(t *testing.T) {
 	calls := []models.ConversationItem{
-		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell_command", Arguments: `{"command": "rm -rf /"}`},
 	}
 	pending, forbidden := classifyToolsForApproval(calls, "", "")
 	assert.Nil(t, pending)
@@ -1143,7 +1143,7 @@ func TestClassifyToolsForApproval_EmptyMode(t *testing.T) {
 
 func TestClassifyToolsForApproval_UnlessTrusted_SafeCommand(t *testing.T) {
 	calls := []models.ConversationItem{
-		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "ls -la"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell_command", Arguments: `{"command": "ls -la"}`},
 	}
 	pending, forbidden := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, "")
 	assert.Empty(t, pending)
@@ -1152,12 +1152,12 @@ func TestClassifyToolsForApproval_UnlessTrusted_SafeCommand(t *testing.T) {
 
 func TestClassifyToolsForApproval_UnlessTrusted_MutatingCommand(t *testing.T) {
 	calls := []models.ConversationItem{
-		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /tmp"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell_command", Arguments: `{"command": "rm -rf /tmp"}`},
 	}
 	pending, _ := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, "")
 	require.Len(t, pending, 1)
 	assert.Equal(t, "1", pending[0].CallID)
-	assert.Equal(t, "shell", pending[0].ToolName)
+	assert.Equal(t, "shell_command", pending[0].ToolName)
 }
 
 func TestClassifyToolsForApproval_UnlessTrusted_ReadOnlyTools(t *testing.T) {
@@ -1183,8 +1183,8 @@ func TestClassifyToolsForApproval_UnlessTrusted_WritingTools(t *testing.T) {
 func TestClassifyToolsForApproval_UnlessTrusted_MixedBatch(t *testing.T) {
 	calls := []models.ConversationItem{
 		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "read_file", Arguments: `{"file_path": "/tmp/a"}`},
-		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "shell", Arguments: `{"command": "rm -rf /tmp"}`},
-		{Type: models.ItemTypeFunctionCall, CallID: "3", Name: "shell", Arguments: `{"command": "ls -la"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "2", Name: "shell_command", Arguments: `{"command": "rm -rf /tmp"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "3", Name: "shell_command", Arguments: `{"command": "ls -la"}`},
 	}
 	pending, _ := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, "")
 	// Only the mutating shell command should need approval
@@ -1194,7 +1194,7 @@ func TestClassifyToolsForApproval_UnlessTrusted_MixedBatch(t *testing.T) {
 
 func TestClassifyToolsForApproval_ForbiddenByPolicy(t *testing.T) {
 	calls := []models.ConversationItem{
-		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell", Arguments: `{"command": "rm -rf /"}`},
+		{Type: models.ItemTypeFunctionCall, CallID: "1", Name: "shell_command", Arguments: `{"command": "rm -rf /"}`},
 	}
 	rules := `prefix_rule(pattern=["rm"], decision="forbidden", justification="never delete")`
 	pending, forbidden := classifyToolsForApproval(calls, models.ApprovalUnlessTrusted, rules)
@@ -1212,19 +1212,35 @@ func TestEvaluateToolApproval(t *testing.T) {
 		mode     models.ApprovalMode
 		expected tools.ExecApprovalRequirement
 	}{
+		// Read-only tools always safe
 		{"read_file is safe", "read_file", `{"file_path": "/tmp/test"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
 		{"list_dir is safe", "list_dir", `{"path": "/tmp"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
 		{"grep_files is safe", "grep_files", `{"pattern": "foo"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+
+		// Write tools
 		{"write_file is mutating", "write_file", `{"file_path": "/tmp/test"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
 		{"apply_patch is mutating", "apply_patch", `{"file_path": "/tmp/test"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
-		{"shell ls is safe", "shell", `{"command": "ls -la"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
-		{"shell cat is safe", "shell", `{"command": "cat /tmp/test"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
-		{"shell rm is mutating", "shell", `{"command": "rm -rf /tmp"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
-		{"shell git status is safe", "shell", `{"command": "git status"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
-		{"shell git push is mutating", "shell", `{"command": "git push"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+
+		// shell_command (string-based) — backward compat with old "shell" string command tests
+		{"shell_command ls is safe", "shell_command", `{"command": "ls -la"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"shell_command cat is safe", "shell_command", `{"command": "cat /tmp/test"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"shell_command rm is mutating", "shell_command", `{"command": "rm -rf /tmp"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell_command git status is safe", "shell_command", `{"command": "git status"}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"shell_command git push is mutating", "shell_command", `{"command": "git push"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell_command with bad json", "shell_command", `{bad json`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell_command with empty command", "shell_command", `{"command": ""}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+
+		// shell (array-based)
+		{"shell array ls is safe", "shell", `{"command": ["ls", "-la"]}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"shell array rm is mutating", "shell", `{"command": ["rm", "-rf", "/tmp"]}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell array bash -c ls is safe", "shell", `{"command": ["bash", "-c", "ls"]}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"shell array git status is safe", "shell", `{"command": ["git", "status"]}`, models.ApprovalUnlessTrusted, tools.ApprovalSkip},
+		{"shell array with bad json", "shell", `{bad json`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell array with empty array", "shell", `{"command": []}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+		{"shell array with string command", "shell", `{"command": "ls"}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
+
+		// Unknown tool
 		{"unknown tool is mutating", "unknown_tool", `{}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
-		{"shell with bad json is mutating", "shell", `{bad json`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
-		{"shell with empty command is mutating", "shell", `{"command": ""}`, models.ApprovalUnlessTrusted, tools.ApprovalNeeded},
 	}
 
 	for _, tt := range tests {
@@ -1282,7 +1298,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_QueryPendingApprov
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-rm",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "rm -rf /tmp/test"}`,
 				},
 			},
@@ -1310,7 +1326,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_QueryPendingApprov
 		assert.Equal(s.T(), PhaseApprovalPending, status.Phase)
 		require.Len(s.T(), status.PendingApprovals, 1)
 		assert.Equal(s.T(), "call-rm", status.PendingApprovals[0].CallID)
-		assert.Equal(s.T(), "shell", status.PendingApprovals[0].ToolName)
+		assert.Equal(s.T(), "shell_command", status.PendingApprovals[0].ToolName)
 		assert.Equal(s.T(), `{"command": "rm -rf /tmp/test"}`, status.PendingApprovals[0].Arguments)
 
 		// Approve to unblock
@@ -1378,7 +1394,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_ShutdownDuringAppr
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-rm",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "rm -rf /tmp/test"}`,
 				},
 			},
@@ -1397,7 +1413,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_ShutdownDuringAppr
 	var result WorkflowResult
 	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
 	assert.Equal(s.T(), "shutdown", result.EndReason)
-	assert.NotContains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.NotContains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_ApprovalGate_MixedBatch verifies that when a batch has both
@@ -1417,7 +1433,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_MixedBatch() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-rm",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "rm -rf /tmp/test"}`,
 				},
 			},
@@ -1435,7 +1451,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_MixedBatch() {
 		}, nil).Once()
 
 	s.env.OnActivity("ExecuteTool", mock.Anything, mock.MatchedBy(func(input activities.ToolActivityInput) bool {
-		return input.ToolName == "shell"
+		return input.ToolName == "shell_command"
 	})).
 		Return(activities.ToolActivityOutput{
 			CallID: "call-rm", Content: "", Success: &trueVal,
@@ -1452,7 +1468,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_MixedBatch() {
 		var status TurnStatus
 		require.NoError(s.T(), result.Get(&status))
 		require.Len(s.T(), status.PendingApprovals, 1, "Only mutating tool should be pending")
-		assert.Equal(s.T(), "shell", status.PendingApprovals[0].ToolName)
+		assert.Equal(s.T(), "shell_command", status.PendingApprovals[0].ToolName)
 
 		s.env.UpdateWorkflow(UpdateApprovalResponse, "approval-1", noopCallback(),
 			ApprovalResponse{Approved: []string{"call-rm"}})
@@ -1467,7 +1483,7 @@ func (s *AgenticWorkflowTestSuite) TestMultiTurn_ApprovalGate_MixedBatch() {
 	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
 	assert.Equal(s.T(), "shutdown", result.EndReason)
 	assert.Contains(s.T(), result.ToolCallsExecuted, "read_file")
-	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestMultiTurn_ApprovalGate_ReadFileAutoApproved verifies that read_file
@@ -1754,10 +1770,10 @@ func TestDetectRepeatedToolCalls_Unit(t *testing.T) {
 func TestToolCallsKey_Deterministic(t *testing.T) {
 	calls1 := []models.ConversationItem{
 		{Name: "read_file", Arguments: `{"path": "a"}`},
-		{Name: "shell", Arguments: `{"command": "ls"}`},
+		{Name: "shell_command", Arguments: `{"command": "ls"}`},
 	}
 	calls2 := []models.ConversationItem{
-		{Name: "shell", Arguments: `{"command": "ls"}`},
+		{Name: "shell_command", Arguments: `{"command": "ls"}`},
 		{Name: "read_file", Arguments: `{"path": "a"}`},
 	}
 	assert.Equal(t, toolCallsKey(calls1), toolCallsKey(calls2))
@@ -1765,7 +1781,7 @@ func TestToolCallsKey_Deterministic(t *testing.T) {
 	// Different args produce different keys
 	calls3 := []models.ConversationItem{
 		{Name: "read_file", Arguments: `{"path": "b"}`},
-		{Name: "shell", Arguments: `{"command": "ls"}`},
+		{Name: "shell_command", Arguments: `{"command": "ls"}`},
 	}
 	assert.NotEqual(t, toolCallsKey(calls1), toolCallsKey(calls3))
 }
@@ -1889,7 +1905,7 @@ func (s *AgenticWorkflowTestSuite) TestHandleOnFailureEscalation_SandboxFailure(
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-shell",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "mkdir /opt/test"}`,
 				},
 			},
@@ -1964,7 +1980,7 @@ func (s *AgenticWorkflowTestSuite) TestHandleOnFailureEscalation_MixedFailures()
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-shell",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "mkdir /opt/restricted"}`,
 				},
 			},
@@ -1985,7 +2001,7 @@ func (s *AgenticWorkflowTestSuite) TestHandleOnFailureEscalation_MixedFailures()
 
 	// shell fails with sandbox denial
 	s.env.OnActivity("ExecuteTool", mock.Anything, mock.MatchedBy(func(input activities.ToolActivityInput) bool {
-		return input.ToolName == "shell"
+		return input.ToolName == "shell_command"
 	})).
 		Return(activities.ToolActivityOutput{
 			CallID:  "call-shell",
@@ -2302,7 +2318,7 @@ func (s *AgenticWorkflowTestSuite) TestRequestUserInput_WithNormalTools() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-shell",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "echo hello"}`,
 				},
 			},
@@ -2341,7 +2357,7 @@ func (s *AgenticWorkflowTestSuite) TestRequestUserInput_WithNormalTools() {
 	var result WorkflowResult
 	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
 	assert.Equal(s.T(), "shutdown", result.EndReason)
-	assert.Contains(s.T(), result.ToolCallsExecuted, "shell")
+	assert.Contains(s.T(), result.ToolCallsExecuted, "shell_command")
 }
 
 // TestRequestUserInput_ValidatorRejectsWhenNotPending verifies that sending a
@@ -2587,7 +2603,7 @@ func (s *AgenticWorkflowTestSuite) TestResponseIDTracking() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-1",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "echo hi"}`,
 				},
 			},
@@ -2643,7 +2659,7 @@ func (s *AgenticWorkflowTestSuite) TestIncrementalHistorySend() {
 				{
 					Type:      models.ItemTypeFunctionCall,
 					CallID:    "call-1",
-					Name:      "shell",
+					Name:      "shell_command",
 					Arguments: `{"command": "ls"}`,
 				},
 			},

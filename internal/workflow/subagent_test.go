@@ -94,7 +94,7 @@ func TestIsCollabToolCall(t *testing.T) {
 		assert.True(t, isCollabToolCall(name), "should be collab tool: %s", name)
 	}
 
-	nonCollabTools := []string{"shell", "read_file", "write_file", "request_user_input", "unknown"}
+	nonCollabTools := []string{"shell", "shell_command", "read_file", "write_file", "request_user_input", "unknown"}
 	for _, name := range nonCollabTools {
 		assert.False(t, isCollabToolCall(name), "should not be collab tool: %s", name)
 	}
@@ -301,7 +301,7 @@ func TestBuildToolSpecs_WithCollabTools(t *testing.T) {
 		})
 
 		names := specNames(specs)
-		assert.Contains(t, names, "shell")
+		assert.Contains(t, names, "shell_command", "EnableShell=true resolves to shell_command")
 		assert.Contains(t, names, "read_file")
 		assert.Contains(t, names, "request_user_input")
 		assert.NotContains(t, names, "spawn_agent")
@@ -319,7 +319,7 @@ func TestBuildToolSpecs_WithCollabTools(t *testing.T) {
 		})
 
 		names := specNames(specs)
-		assert.Contains(t, names, "shell")
+		assert.Contains(t, names, "shell_command", "EnableShell=true resolves to shell_command")
 		assert.Contains(t, names, "read_file")
 		assert.Contains(t, names, "request_user_input")
 		assert.Contains(t, names, "spawn_agent")
@@ -348,8 +348,66 @@ func TestCollabToolsDisabledForChildren(t *testing.T) {
 	assert.NotContains(t, names, "spawn_agent", "child at max depth should not have spawn_agent")
 	assert.NotContains(t, names, "send_input", "child at max depth should not have send_input")
 	assert.NotContains(t, names, "wait", "child at max depth should not have wait")
-	assert.Contains(t, names, "shell", "child should still have shell")
+	assert.Contains(t, names, "shell_command", "child should still have shell_command")
 	assert.Contains(t, names, "read_file", "child should still have read_file")
+}
+
+// ---------------------------------------------------------------------------
+// buildToolSpecs ShellType tests
+// ---------------------------------------------------------------------------
+
+func TestBuildToolSpecs_ShellType_Default(t *testing.T) {
+	specs := buildToolSpecs(models.ToolsConfig{
+		ShellType: models.ShellToolDefault,
+	})
+	names := specNames(specs)
+	assert.Contains(t, names, "shell", "ShellToolDefault should produce 'shell' spec")
+	assert.NotContains(t, names, "shell_command")
+}
+
+func TestBuildToolSpecs_ShellType_ShellCommand(t *testing.T) {
+	specs := buildToolSpecs(models.ToolsConfig{
+		ShellType: models.ShellToolShellCommand,
+	})
+	names := specNames(specs)
+	assert.Contains(t, names, "shell_command", "ShellToolShellCommand should produce 'shell_command' spec")
+	assert.NotContains(t, names, "shell")
+}
+
+func TestBuildToolSpecs_ShellType_Disabled(t *testing.T) {
+	specs := buildToolSpecs(models.ToolsConfig{
+		ShellType: models.ShellToolDisabled,
+	})
+	names := specNames(specs)
+	assert.NotContains(t, names, "shell")
+	assert.NotContains(t, names, "shell_command")
+}
+
+func TestBuildToolSpecs_ShellType_BackwardCompat(t *testing.T) {
+	// EnableShell=true with no explicit ShellType should produce shell_command
+	specs := buildToolSpecs(models.ToolsConfig{
+		EnableShell: true,
+	})
+	names := specNames(specs)
+	assert.Contains(t, names, "shell_command", "EnableShell=true should default to shell_command")
+
+	// EnableShell=false with no explicit ShellType should produce nothing
+	specs = buildToolSpecs(models.ToolsConfig{
+		EnableShell: false,
+	})
+	names = specNames(specs)
+	assert.NotContains(t, names, "shell")
+	assert.NotContains(t, names, "shell_command")
+}
+
+func TestBuildToolSpecs_ShellType_ExplicitOverridesEnableShell(t *testing.T) {
+	// Explicit ShellType takes precedence over EnableShell
+	specs := buildToolSpecs(models.ToolsConfig{
+		EnableShell: false,
+		ShellType:   models.ShellToolDefault,
+	})
+	names := specNames(specs)
+	assert.Contains(t, names, "shell", "explicit ShellType should override EnableShell=false")
 }
 
 func TestCollabToolApprovalSkip(t *testing.T) {

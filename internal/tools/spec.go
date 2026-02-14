@@ -42,40 +42,114 @@ type ToolParameter struct {
 	Items       map[string]interface{} `json:"items,omitempty"` // For array types: JSON schema of array items
 }
 
-// NewShellToolSpec creates the specification for the shell tool.
+// approvalParameters returns the sandbox approval parameters shared by both
+// shell tool variants. When includePrefixRule is true an additional
+// "prefix_rule" parameter is included (used by the array-based shell tool).
 //
-// Maps to: codex-rs/core/src/tools/spec.rs create_shell_command_tool
-func NewShellToolSpec() ToolSpec {
+// Maps to: codex-rs/core/src/tools/spec.rs approval parameters on shell tools
+func approvalParameters(includePrefixRule bool) []ToolParameter {
+	params := []ToolParameter{
+		{
+			Name:        "sandbox_permissions",
+			Type:        "string",
+			Description: "Sandbox permission scope for this command. Values: 'full-access', 'read-only', 'workspace-write'.",
+			Required:    false,
+		},
+		{
+			Name:        "justification",
+			Type:        "string",
+			Description: "Justification for the command being safe to execute.",
+			Required:    false,
+		},
+	}
+	if includePrefixRule {
+		params = append(params, ToolParameter{
+			Name:        "prefix_rule",
+			Type:        "string",
+			Description: "Known-safe command prefix that matches an allow rule.",
+			Required:    false,
+		})
+	}
+	return params
+}
+
+// NewShellToolSpec creates the specification for the array-based "shell" tool.
+// The command is an array of strings passed directly to execvp.
+//
+// Maps to: codex-rs/core/src/tools/spec.rs create_shell_tool
+func NewShellToolSpec(includePrefixRule bool) ToolSpec {
+	params := []ToolParameter{
+		{
+			Name:        "command",
+			Type:        "array",
+			Description: `The command to execute as an array of strings (passed to execvp). Use ["bash", "-lc", "your command"] for shell scripts.`,
+			Required:    true,
+			Items:       map[string]interface{}{"type": "string"},
+		},
+		{
+			Name:        "workdir",
+			Type:        "string",
+			Description: "The working directory to execute the command in",
+			Required:    false,
+		},
+		{
+			Name:        "timeout_ms",
+			Type:        "number",
+			Description: "The timeout for the command in milliseconds",
+			Required:    false,
+		},
+	}
+	params = append(params, approvalParameters(includePrefixRule)...)
+
 	return ToolSpec{
 		Name: "shell",
-		Description: `Runs a shell command and returns its output.
-- Always set the ` + "`workdir`" + ` param when using the shell function. Do not use ` + "`cd`" + ` unless absolutely necessary.`,
-		Parameters: []ToolParameter{
-			{
-				Name:        "command",
-				Type:        "string",
-				Description: "The shell script to execute in the user's default shell",
-				Required:    true,
-			},
-			{
-				Name:        "workdir",
-				Type:        "string",
-				Description: "The working directory to execute the command in",
-				Required:    false,
-			},
-			{
-				Name:        "timeout_ms",
-				Type:        "number",
-				Description: "The timeout for the command in milliseconds",
-				Required:    false,
-			},
-			{
-				Name:        "working_directory",
-				Type:        "string",
-				Description: "Directory to execute the command in. Defaults to the session working directory.",
-				Required:    false,
-			},
+		Description: `Runs a command and returns its output. The command is passed directly to execvp (no shell wrapping).
+- Use ` + "`[\"bash\", \"-lc\", \"your command\"]`" + ` to run through bash.
+- Always set the ` + "`workdir`" + ` param. Do not use ` + "`cd`" + ` unless absolutely necessary.`,
+		Parameters:       params,
+		DefaultTimeoutMs: DefaultShellTimeoutMs,
+	}
+}
+
+// NewShellCommandToolSpec creates the specification for the string-based
+// "shell_command" tool. The command is a string executed through the user's
+// detected login shell.
+//
+// Maps to: codex-rs/core/src/tools/spec.rs create_shell_command_tool
+func NewShellCommandToolSpec(includePrefixRule bool) ToolSpec {
+	params := []ToolParameter{
+		{
+			Name:        "command",
+			Type:        "string",
+			Description: "The shell command to execute in the user's default shell",
+			Required:    true,
 		},
+		{
+			Name:        "workdir",
+			Type:        "string",
+			Description: "The working directory to execute the command in",
+			Required:    false,
+		},
+		{
+			Name:        "login",
+			Type:        "boolean",
+			Description: "Whether to run as a login shell (loads user profile). Defaults to true.",
+			Required:    false,
+		},
+		{
+			Name:        "timeout_ms",
+			Type:        "number",
+			Description: "The timeout for the command in milliseconds",
+			Required:    false,
+		},
+	}
+	params = append(params, approvalParameters(includePrefixRule)...)
+
+	return ToolSpec{
+		Name: "shell_command",
+		Description: `Runs a shell command and returns its output.
+- Always set the ` + "`workdir`" + ` param when using the shell_command function. Do not use ` + "`cd`" + ` unless absolutely necessary.`,
+		Parameters:       params,
 		DefaultTimeoutMs: DefaultShellTimeoutMs,
 	}
 }

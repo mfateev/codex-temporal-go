@@ -193,7 +193,8 @@ func createWorker(c client.Client) worker.Worker {
 
 	// Create tool registry with all built-in tools
 	toolRegistry := tools.NewToolRegistry()
-	toolRegistry.Register(handlers.NewShellTool())
+	toolRegistry.Register(handlers.NewShellHandler())        // array-based "shell"
+	toolRegistry.Register(handlers.NewShellCommandHandler()) // string-based "shell_command"
 	toolRegistry.Register(handlers.NewReadFileTool())
 	toolRegistry.Register(handlers.NewWriteFileTool())
 	toolRegistry.Register(handlers.NewListDirTool())
@@ -436,7 +437,7 @@ func TestAgenticWorkflow_WithShellTool(t *testing.T) {
 
 	assert.Equal(t, workflowID, result.ConversationID)
 	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
-	assert.Contains(t, result.ToolCallsExecuted, "shell", "Should have called shell tool")
+	assert.Contains(t, result.ToolCallsExecuted, "shell_command", "Should have called shell_command tool")
 
 	t.Logf("Total tokens: %d, Iterations: %d, Tools: %v",
 		result.TotalTokens, result.TotalIterations, result.ToolCallsExecuted)
@@ -474,7 +475,7 @@ func TestAgenticWorkflow_MultiTurn(t *testing.T) {
 
 	assert.Equal(t, workflowID, result.ConversationID)
 	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
-	assert.Contains(t, result.ToolCallsExecuted, "shell", "Should have called shell tool")
+	assert.Contains(t, result.ToolCallsExecuted, "shell_command", "Should have called shell_command tool")
 	assert.Contains(t, result.ToolCallsExecuted, "read_file", "Should have called read_file tool")
 
 	t.Logf("Total tokens: %d, Iterations: %d, Tools: %v",
@@ -903,7 +904,7 @@ func TestAgenticWorkflow_AnthropicWithTools(t *testing.T) {
 
 	assert.Equal(t, workflowID, result.ConversationID)
 	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
-	assert.Contains(t, result.ToolCallsExecuted, "shell", "Should have called shell tool")
+	assert.Contains(t, result.ToolCallsExecuted, "shell_command", "Should have called shell_command tool")
 	assert.Equal(t, "shutdown", result.EndReason)
 
 	t.Logf("Anthropic with tools - Total tokens: %d, Iterations: %d, Tools: %v",
@@ -1590,7 +1591,7 @@ func TestAgenticWorkflow_CodexModelWithTools(t *testing.T) {
 
 	assert.Equal(t, workflowID, result.ConversationID)
 	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
-	assert.Contains(t, result.ToolCallsExecuted, "shell", "Should have called shell tool")
+	assert.Contains(t, result.ToolCallsExecuted, "shell_command", "Should have called shell_command tool")
 	assert.Equal(t, "shutdown", result.EndReason)
 
 	t.Logf("Codex with tools - Total tokens: %d, Cached: %d, Iterations: %d, Tools: %v",
