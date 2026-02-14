@@ -1508,6 +1508,95 @@ func TestFetchAvailableModels_E2E(t *testing.T) {
 	}
 }
 
+// TestAgenticWorkflow_CodexModel tests using an OpenAI Codex model (reasoning model).
+// Codex models are code-specialized reasoning models that may require different
+// API parameters (e.g., reasoning effort instead of temperature).
+func TestAgenticWorkflow_CodexModel(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-codex-model-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage:    "What is 2 + 2? Answer with just the number.",
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Provider:      "openai",
+				Model:         "gpt-5.2-codex",
+				Temperature:   1.0, // Codex models reject temperature; client should skip it
+				MaxTokens:     1000,
+				ContextWindow: 200000,
+			},
+			Tools: models.ToolsConfig{
+				EnableShell:    false,
+				EnableReadFile: false,
+			},
+			DisableSuggestions: true,
+		},
+	}
+
+	t.Logf("Starting Codex model workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+
+	// Wait for the first turn to complete
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+
+	// Send shutdown and get result
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+
+	assert.Equal(t, workflowID, result.ConversationID)
+	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
+	assert.Empty(t, result.ToolCallsExecuted, "Should not have called any tools")
+	assert.Equal(t, "shutdown", result.EndReason)
+
+	t.Logf("Codex model - Total tokens: %d, Cached: %d, Iterations: %d",
+		result.TotalTokens, result.TotalCachedTokens, result.TotalIterations)
+}
+
+// TestAgenticWorkflow_CodexModelWithTools tests Codex model with tool calling.
+func TestAgenticWorkflow_CodexModelWithTools(t *testing.T) {
+	c := dialTemporal(t)
+
+	workflowID := "test-codex-tools-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage:    "Run 'echo hello codex' using the shell tool and tell me the output.",
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Provider:      "openai",
+				Model:         "gpt-5.2-codex",
+				Temperature:   0,
+				MaxTokens:     2000,
+				ContextWindow: 200000,
+			},
+			Tools: models.ToolsConfig{
+				EnableShell: true,
+			},
+			DisableSuggestions: true,
+		},
+	}
+
+	t.Logf("Starting Codex model with tools workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+
+	assert.Equal(t, workflowID, result.ConversationID)
+	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
+	assert.Contains(t, result.ToolCallsExecuted, "shell", "Should have called shell tool")
+	assert.Equal(t, "shutdown", result.EndReason)
+
+	t.Logf("Codex with tools - Total tokens: %d, Cached: %d, Iterations: %d, Tools: %v",
+		result.TotalTokens, result.TotalCachedTokens, result.TotalIterations, result.ToolCallsExecuted)
+}
+
 // truncateStr truncates a string to n characters with "..." appended.
 func truncateStr(s string, n int) string {
 	if len(s) <= n {

@@ -49,12 +49,19 @@ func (c *OpenAIClient) Call(ctx context.Context, request LLMRequest) (LLMRespons
 		params.Instructions = openai.String(instructions)
 	}
 
-	// Model parameters
-	if request.ModelConfig.Temperature > 0 {
+	// Model parameters — reasoning models (o-series, codex) reject temperature
+	if request.ModelConfig.Temperature > 0 && !isReasoningModel(request.ModelConfig.Model) {
 		params.Temperature = openai.Float(request.ModelConfig.Temperature)
 	}
 	if request.ModelConfig.MaxTokens > 0 {
 		params.MaxOutputTokens = openai.Int(int64(request.ModelConfig.MaxTokens))
+	}
+
+	// Reasoning effort for reasoning models (o-series, codex)
+	if request.ModelConfig.ReasoningEffort != "" && isReasoningModel(request.ModelConfig.Model) {
+		params.Reasoning = shared.ReasoningParam{
+			Effort: shared.ReasoningEffort(request.ModelConfig.ReasoningEffort),
+		}
 	}
 
 	// Tool definitions
@@ -85,6 +92,7 @@ func (c *OpenAIClient) Call(ctx context.Context, request LLMRequest) (LLMRespons
 			PromptTokens:     int(resp.Usage.InputTokens),
 			CompletionTokens: int(resp.Usage.OutputTokens),
 			TotalTokens:      int(resp.Usage.TotalTokens),
+			CachedTokens:     int(resp.Usage.InputTokensDetails.CachedTokens),
 		},
 	}, nil
 }
@@ -376,9 +384,23 @@ func parseCompactResponse(raw map[string]interface{}) ([]models.ConversationItem
 		if v, ok := usageMap["total_tokens"].(float64); ok {
 			usage.TotalTokens = int(v)
 		}
+		if details, ok := usageMap["input_tokens_details"].(map[string]interface{}); ok {
+			if v, ok := details["cached_tokens"].(float64); ok {
+				usage.CachedTokens = int(v)
+			}
+		}
 	}
 
 	return items, usage
+}
+
+// isReasoningModel returns true for OpenAI reasoning models (o-series and codex)
+// that do not support the temperature parameter and use reasoning effort instead.
+func isReasoningModel(model string) bool {
+	return strings.HasPrefix(model, "o1") ||
+		strings.HasPrefix(model, "o3") ||
+		strings.HasPrefix(model, "o4") ||
+		strings.Contains(model, "codex")
 }
 
 // classifyError categorizes an OpenAI API error using the HTTP status code
