@@ -13,10 +13,8 @@ const (
 	ItemTypeAssistantMessage   ConversationItemType = "assistant_message"    // Codex: ResponseItem::AssistantMessage
 	ItemTypeFunctionCall       ConversationItemType = "function_call"        // Codex: ResponseItem::FunctionCall
 	ItemTypeFunctionCallOutput ConversationItemType = "function_call_output" // Codex: ResponseItem::FunctionCallOutput
+	ItemTypeWebSearchCall      ConversationItemType = "web_search_call"      // Codex: ResponseItem::WebSearchCall
 	ItemTypeCompaction         ConversationItemType = "compaction"            // Codex: ResponseItem::Compaction
-
-	// OpenAI-native tool output (informational, not a function call)
-	ItemTypeWebSearchCall ConversationItemType = "web_search_call" // OpenAI Responses API: web_search_call
 
 	// Turn lifecycle markers (maps to Codex EventMsg::TurnStarted / EventMsg::TurnComplete)
 	ItemTypeTurnStarted  ConversationItemType = "turn_started"  // Codex: EventMsg::TurnStarted
@@ -59,6 +57,12 @@ type ConversationItem struct {
 	// FunctionCallOutput fields (Codex: ResponseItem::FunctionCallOutput)
 	// CallID is shared with FunctionCall
 	Output *FunctionCallOutputPayload `json:"output,omitempty"`
+
+	// WebSearchCall fields (Codex: ResponseItem::WebSearchCall)
+	// Maps to: codex-rs/protocol/src/models.rs WebSearchAction
+	WebSearchAction string `json:"web_search_action,omitempty"` // "search", "open_page", "find_in_page"
+	WebSearchStatus string `json:"web_search_status,omitempty"` // "in_progress", "searching", "completed", "failed"
+	WebSearchURL    string `json:"web_search_url,omitempty"`    // URL for open_page / find_in_page actions
 
 	// Turn tracking (maps to Codex TurnContext.turn_id)
 	TurnID string `json:"turn_id,omitempty"`

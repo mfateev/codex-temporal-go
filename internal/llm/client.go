@@ -28,7 +28,7 @@ type LLMRequest struct {
 	// OpenAI Responses API: chain to previous response for incremental sends
 	PreviousResponseID string `json:"previous_response_id,omitempty"`
 
-	// Web search mode (OpenAI-only). When set, the native web_search tool is added.
+	// Web search mode (maps to Codex web_search_mode config)
 	WebSearchMode models.WebSearchMode `json:"web_search_mode,omitempty"`
 }
 

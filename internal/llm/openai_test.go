@@ -177,7 +177,7 @@ func TestBuildToolDefinitions(t *testing.T) {
 		},
 	}
 
-	defs := client.buildToolDefinitions(specs, models.WebSearchDisabled)
+	defs := client.buildToolDefinitions(specs, "")
 
 	require.Len(t, defs, 1)
 	require.NotNil(t, defs[0].OfFunction)
@@ -840,71 +840,21 @@ func TestCall_InstructionsSent(t *testing.T) {
 	assert.Contains(t, instructions, "test user")
 }
 
-// --- Tests for web_search support ---
+// --- Tests for web search parity ---
 
-// TestBuildToolDefinitions_WebSearchDisabled verifies that no web_search tool
-// is added when WebSearchMode is disabled (default).
-func TestBuildToolDefinitions_WebSearchDisabled(t *testing.T) {
-	client := &OpenAIClient{}
-	specs := []tools.ToolSpec{
-		{Name: "shell", Description: "Run shell", Parameters: []tools.ToolParameter{}},
-	}
-
-	defs := client.buildToolDefinitions(specs, models.WebSearchDisabled)
-
-	require.Len(t, defs, 1)
-	require.NotNil(t, defs[0].OfFunction)
-	assert.Nil(t, defs[0].OfWebSearchPreview)
-}
-
-// TestBuildToolDefinitions_WebSearchLive verifies that the web_search_preview
-// tool is appended when WebSearchMode is "live".
-func TestBuildToolDefinitions_WebSearchLive(t *testing.T) {
-	client := &OpenAIClient{}
-	specs := []tools.ToolSpec{
-		{Name: "shell", Description: "Run shell", Parameters: []tools.ToolParameter{}},
-	}
-
-	defs := client.buildToolDefinitions(specs, models.WebSearchLive)
-
-	require.Len(t, defs, 2)
-	// First should be the function tool
-	require.NotNil(t, defs[0].OfFunction)
-	assert.Equal(t, "shell", defs[0].OfFunction.Name)
-	// Second should be the web_search tool
-	require.NotNil(t, defs[1].OfWebSearchPreview)
-	assert.Equal(t, responses.WebSearchToolTypeWebSearchPreview, defs[1].OfWebSearchPreview.Type)
-}
-
-// TestBuildToolDefinitions_WebSearchCached verifies that web_search is added for "cached" mode.
-func TestBuildToolDefinitions_WebSearchCached(t *testing.T) {
-	client := &OpenAIClient{}
-	specs := []tools.ToolSpec{}
-
-	defs := client.buildToolDefinitions(specs, models.WebSearchCached)
-
-	require.Len(t, defs, 1)
-	require.NotNil(t, defs[0].OfWebSearchPreview)
-}
-
-// TestParseOutput_WebSearchCall verifies that web_search_call output items
-// are parsed into ItemTypeWebSearchCall conversation items.
+// TestParseOutput_WebSearchCall verifies web_search_call → ConversationItem mapping.
 func TestParseOutput_WebSearchCall(t *testing.T) {
 	client := &OpenAIClient{}
 	resp := &responses.Response{
 		ID: "resp_ws",
 		Output: []responses.ResponseOutputItemUnion{
 			{
-				Type: "web_search_call",
-				Action: responses.ResponseFunctionWebSearchActionUnion{
+				Type:   "web_search_call",
+				ID:     "ws_123",
+				Status: "completed",
+				Action: responses.ResponseOutputItemUnionAction{
 					Type:  "search",
-					Query: "golang web search API",
-				},
-			},
-			{
-				Type: "message",
-				Content: []responses.ResponseOutputMessageContentUnion{
-					{Type: "output_text", Text: "Here are the results."},
+					Query: "Go generics tutorial",
 				},
 			},
 		},
@@ -912,133 +862,212 @@ func TestParseOutput_WebSearchCall(t *testing.T) {
 
 	items, finishReason := client.parseOutput(resp)
 
-	require.Len(t, items, 2)
-	// First item: web search call
+	require.Len(t, items, 1)
 	assert.Equal(t, models.ItemTypeWebSearchCall, items[0].Type)
-	assert.Equal(t, "golang web search API", items[0].Content)
-	// Second item: assistant message
-	assert.Equal(t, models.ItemTypeAssistantMessage, items[1].Type)
-	assert.Equal(t, "Here are the results.", items[1].Content)
-	// web_search_call should not set hasFunctionCalls
+	assert.Equal(t, "ws_123", items[0].CallID)
+	assert.Equal(t, "search", items[0].WebSearchAction)
+	assert.Equal(t, "completed", items[0].WebSearchStatus)
+	assert.Equal(t, "Go generics tutorial", items[0].Content)
 	assert.Equal(t, models.FinishReasonStop, finishReason)
 }
 
-// TestBuildInput_SkipsWebSearchCall verifies that web_search_call items
-// in history are skipped when building input (they're informational metadata).
-func TestBuildInput_SkipsWebSearchCall(t *testing.T) {
+// TestParseOutput_WebSearchCall_OpenPage verifies open_page action.
+func TestParseOutput_WebSearchCall_OpenPage(t *testing.T) {
+	client := &OpenAIClient{}
+	resp := &responses.Response{
+		ID: "resp_ws2",
+		Output: []responses.ResponseOutputItemUnion{
+			{
+				Type:   "web_search_call",
+				ID:     "ws_456",
+				Status: "completed",
+				Action: responses.ResponseOutputItemUnionAction{
+					Type: "open_page",
+					URL:  "https://example.com/page",
+				},
+			},
+		},
+	}
+
+	items, _ := client.parseOutput(resp)
+
+	require.Len(t, items, 1)
+	assert.Equal(t, "open_page", items[0].WebSearchAction)
+	assert.Equal(t, "https://example.com/page", items[0].Content)
+	assert.Equal(t, "https://example.com/page", items[0].WebSearchURL)
+}
+
+// TestParseOutput_WebSearchCall_FindInPage verifies find_in_page action.
+func TestParseOutput_WebSearchCall_FindInPage(t *testing.T) {
+	client := &OpenAIClient{}
+	resp := &responses.Response{
+		ID: "resp_ws3",
+		Output: []responses.ResponseOutputItemUnion{
+			{
+				Type:   "web_search_call",
+				ID:     "ws_789",
+				Status: "completed",
+				Action: responses.ResponseOutputItemUnionAction{
+					Type:    "find_in_page",
+					Pattern: "installation",
+					URL:     "https://example.com/docs",
+				},
+			},
+		},
+	}
+
+	items, _ := client.parseOutput(resp)
+
+	require.Len(t, items, 1)
+	assert.Equal(t, "find_in_page", items[0].WebSearchAction)
+	assert.Equal(t, "'installation' in https://example.com/docs", items[0].Content)
+	assert.Equal(t, "https://example.com/docs", items[0].WebSearchURL)
+}
+
+// TestParseOutput_MixedWithWebSearch verifies message + web_search + function_call output.
+func TestParseOutput_MixedWithWebSearch(t *testing.T) {
+	client := &OpenAIClient{}
+	resp := &responses.Response{
+		ID: "resp_mixed_ws",
+		Output: []responses.ResponseOutputItemUnion{
+			{
+				Type:   "web_search_call",
+				ID:     "ws_1",
+				Status: "completed",
+				Action: responses.ResponseOutputItemUnionAction{Type: "search", Query: "weather NYC"},
+			},
+			{
+				Type: "message",
+				Content: []responses.ResponseOutputMessageContentUnion{
+					{Type: "output_text", Text: "The weather is sunny."},
+				},
+			},
+			{
+				Type:      "function_call",
+				CallID:    "call_1",
+				Name:      "shell",
+				Arguments: `{"command":"date"}`,
+			},
+		},
+	}
+
+	items, finishReason := client.parseOutput(resp)
+
+	require.Len(t, items, 3)
+	assert.Equal(t, models.ItemTypeWebSearchCall, items[0].Type)
+	assert.Equal(t, models.ItemTypeAssistantMessage, items[1].Type)
+	assert.Equal(t, models.ItemTypeFunctionCall, items[2].Type)
+	assert.Equal(t, models.FinishReasonToolCalls, finishReason)
+}
+
+// TestFormatWebSearchDetail_Search verifies search action formatting.
+func TestFormatWebSearchDetail_Search(t *testing.T) {
+	action := responses.ResponseOutputItemUnionAction{Type: "search", Query: "Go 1.22 release"}
+	detail := formatWebSearchDetail("search", action)
+	assert.Equal(t, "Go 1.22 release", detail)
+}
+
+// TestFormatWebSearchDetail_SearchMultipleQueries verifies multiple queries.
+func TestFormatWebSearchDetail_SearchMultipleQueries(t *testing.T) {
+	action := responses.ResponseOutputItemUnionAction{
+		Type:    "search",
+		Queries: []string{"first query", "second query"},
+	}
+	detail := formatWebSearchDetail("search", action)
+	assert.Equal(t, "first query ...", detail)
+}
+
+// TestFormatWebSearchDetail_OpenPage verifies open_page formatting.
+func TestFormatWebSearchDetail_OpenPage(t *testing.T) {
+	action := responses.ResponseOutputItemUnionAction{Type: "open_page", URL: "https://example.com"}
+	detail := formatWebSearchDetail("open_page", action)
+	assert.Equal(t, "https://example.com", detail)
+}
+
+// TestFormatWebSearchDetail_FindInPage verifies find_in_page formatting.
+func TestFormatWebSearchDetail_FindInPage(t *testing.T) {
+	action := responses.ResponseOutputItemUnionAction{
+		Type:    "find_in_page",
+		Pattern: "installation",
+		URL:     "https://example.com/docs",
+	}
+	detail := formatWebSearchDetail("find_in_page", action)
+	assert.Equal(t, "'installation' in https://example.com/docs", detail)
+}
+
+// TestFormatWebSearchDetail_FindInPage_PatternOnly verifies find without URL.
+func TestFormatWebSearchDetail_FindInPage_PatternOnly(t *testing.T) {
+	action := responses.ResponseOutputItemUnionAction{Type: "find_in_page", Pattern: "TODO"}
+	detail := formatWebSearchDetail("find_in_page", action)
+	assert.Equal(t, "'TODO'", detail)
+}
+
+// TestFormatWebSearchDetail_Unknown verifies unknown action produces empty detail.
+func TestFormatWebSearchDetail_Unknown(t *testing.T) {
+	action := responses.ResponseOutputItemUnionAction{Type: "something_new"}
+	detail := formatWebSearchDetail("something_new", action)
+	assert.Equal(t, "", detail)
+}
+
+// TestBuildToolDefinitions_WebSearchCached verifies cached mode adds web search tool.
+func TestBuildToolDefinitions_WebSearchCached(t *testing.T) {
+	client := &OpenAIClient{}
+	defs := client.buildToolDefinitions(nil, models.WebSearchCached)
+
+	require.Len(t, defs, 1)
+	require.NotNil(t, defs[0].OfWebSearch, "should be a WebSearchToolParam")
+	assert.Equal(t, responses.WebSearchToolSearchContextSizeLow, defs[0].OfWebSearch.SearchContextSize)
+}
+
+// TestBuildToolDefinitions_WebSearchLive verifies live mode adds web search tool.
+func TestBuildToolDefinitions_WebSearchLive(t *testing.T) {
+	client := &OpenAIClient{}
+	defs := client.buildToolDefinitions(nil, models.WebSearchLive)
+
+	require.Len(t, defs, 1)
+	require.NotNil(t, defs[0].OfWebSearch, "should be a WebSearchToolParam")
+	assert.Equal(t, responses.WebSearchToolSearchContextSizeMedium, defs[0].OfWebSearch.SearchContextSize)
+}
+
+// TestBuildToolDefinitions_WebSearchDisabled verifies disabled mode adds no web search.
+func TestBuildToolDefinitions_WebSearchDisabled(t *testing.T) {
+	client := &OpenAIClient{}
+	defs := client.buildToolDefinitions(nil, models.WebSearchDisabled)
+	assert.Empty(t, defs)
+}
+
+// TestBuildToolDefinitions_FunctionPlusWebSearch verifies both function tools and web search.
+func TestBuildToolDefinitions_FunctionPlusWebSearch(t *testing.T) {
+	client := &OpenAIClient{}
+	specs := []tools.ToolSpec{
+		{Name: "shell", Description: "Run command", Parameters: []tools.ToolParameter{
+			{Name: "command", Type: "string", Description: "cmd", Required: true},
+		}},
+	}
+	defs := client.buildToolDefinitions(specs, models.WebSearchLive)
+
+	require.Len(t, defs, 2)
+	assert.NotNil(t, defs[0].OfFunction, "first should be function tool")
+	assert.NotNil(t, defs[1].OfWebSearch, "second should be web search tool")
+}
+
+// TestBuildInput_WebSearchCall verifies web_search_call items are fed back via OfWebSearchCall.
+func TestBuildInput_WebSearchCall(t *testing.T) {
 	client := &OpenAIClient{}
 	history := []models.ConversationItem{
-		{Type: models.ItemTypeUserMessage, Content: "search for Go"},
-		{Type: models.ItemTypeWebSearchCall, Content: "Go programming language"},
-		{Type: models.ItemTypeAssistantMessage, Content: "Here are the results"},
+		{
+			Type:            models.ItemTypeWebSearchCall,
+			CallID:          "ws_123",
+			WebSearchAction: "search",
+			WebSearchStatus: "completed",
+			Content:         "Go generics",
+		},
 	}
 
 	items := client.buildInput(history)
 
-	// web_search_call should be skipped
-	require.Len(t, items, 2)
-	require.NotNil(t, items[0].OfMessage)
-	require.NotNil(t, items[1].OfOutputMessage)
-}
-
-// TestExtractWebSearchQuery verifies query extraction from different action types.
-func TestExtractWebSearchQuery(t *testing.T) {
-	tests := []struct {
-		name     string
-		item     responses.ResponseOutputItemUnion
-		expected string
-	}{
-		{
-			name: "search action",
-			item: responses.ResponseOutputItemUnion{
-				Action: responses.ResponseFunctionWebSearchActionUnion{
-					Type:  "search",
-					Query: "weather today",
-				},
-			},
-			expected: "weather today",
-		},
-		{
-			name: "open_page action",
-			item: responses.ResponseOutputItemUnion{
-				Action: responses.ResponseFunctionWebSearchActionUnion{
-					Type: "open_page",
-					URL:  "https://example.com",
-				},
-			},
-			expected: "https://example.com",
-		},
-		{
-			name: "find action",
-			item: responses.ResponseOutputItemUnion{
-				Action: responses.ResponseFunctionWebSearchActionUnion{
-					Type:    "find",
-					Pattern: "main heading",
-				},
-			},
-			expected: "main heading",
-		},
-		{
-			name: "unknown action",
-			item: responses.ResponseOutputItemUnion{
-				Action: responses.ResponseFunctionWebSearchActionUnion{
-					Type: "unknown",
-				},
-			},
-			expected: "web search",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := extractWebSearchQuery(tt.item)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-// TestCall_WebSearchToolSent verifies that the web_search tool is included
-// in the HTTP request body when WebSearchMode is set.
-func TestCall_WebSearchToolSent(t *testing.T) {
-	var capturedBody map[string]interface{}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
-		require.NoError(t, json.Unmarshal(body, &capturedBody))
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, fakeResponsesAPIResponse())
-	}))
-	defer server.Close()
-
-	client := &OpenAIClient{
-		client: openai.NewClient(
-			option.WithBaseURL(server.URL),
-			option.WithAPIKey("test-key"),
-		),
-	}
-
-	request := LLMRequest{
-		History: []models.ConversationItem{
-			{Type: models.ItemTypeUserMessage, Content: "search for Go"},
-		},
-		ModelConfig:   models.DefaultModelConfig(),
-		WebSearchMode: models.WebSearchLive,
-	}
-
-	_, err := client.Call(context.Background(), request)
-	require.NoError(t, err)
-
-	toolsRaw, hasTools := capturedBody["tools"]
-	assert.True(t, hasTools, "tools must be present when web search is enabled")
-	toolsList, ok := toolsRaw.([]interface{})
-	require.True(t, ok)
-	// Should have 1 tool (web_search_preview), no function tools
-	require.Len(t, toolsList, 1)
-	// Check the tool type
-	toolMap, ok := toolsList[0].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "web_search_preview", toolMap["type"])
+	require.Len(t, items, 1)
+	require.NotNil(t, items[0].OfWebSearchCall, "should be OfWebSearchCall")
+	assert.Equal(t, "ws_123", items[0].OfWebSearchCall.ID)
+	assert.Equal(t, responses.ResponseFunctionWebSearchStatus("completed"), items[0].OfWebSearchCall.Status)
 }
