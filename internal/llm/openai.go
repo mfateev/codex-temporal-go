@@ -171,6 +171,18 @@ func (c *OpenAIClient) buildInput(history []models.ConversationItem) []responses
 				OfWebSearchCall: wsParam,
 			})
 
+		case models.ItemTypeModelSwitch:
+			// Model-switch messages are sent as developer-role messages so
+			// the new model has context about the transition.
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfMessage: &responses.EasyInputMessageParam{
+					Role: responses.EasyInputMessageRoleDeveloper,
+					Content: responses.EasyInputMessageContentUnionParam{
+						OfString: param.NewOpt(item.Content),
+					},
+				},
+			})
+
 		case models.ItemTypeCompaction:
 			// Compaction markers are internal tracking items. After compaction,
 			// the history contains a summary as an assistant message which is

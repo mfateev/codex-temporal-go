@@ -16,6 +16,10 @@ const (
 	ItemTypeWebSearchCall      ConversationItemType = "web_search_call"      // Codex: ResponseItem::WebSearchCall
 	ItemTypeCompaction         ConversationItemType = "compaction"            // Codex: ResponseItem::Compaction
 
+	// Model switch developer message injected when the user switches models mid-conversation.
+	// Sent as a developer-role message so the new model has context about the transition.
+	ItemTypeModelSwitch ConversationItemType = "model_switch"
+
 	// Turn lifecycle markers (maps to Codex EventMsg::TurnStarted / EventMsg::TurnComplete)
 	ItemTypeTurnStarted  ConversationItemType = "turn_started"  // Codex: EventMsg::TurnStarted
 	ItemTypeTurnComplete ConversationItemType = "turn_complete"  // Codex: EventMsg::TurnComplete

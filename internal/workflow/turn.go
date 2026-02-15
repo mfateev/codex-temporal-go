@@ -110,16 +110,72 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 	return false, nil
 }
 
+// effectiveAutoCompactLimit returns the auto-compact token limit, clamped to
+// 90% of the context window. This prevents the configured limit from exceeding
+// the model's actual context capacity (important after a model switch to a
+// smaller context window).
+func (s *SessionState) effectiveAutoCompactLimit() int {
+	configured := s.Config.AutoCompactTokenLimit
+	if configured <= 0 {
+		return 0
+	}
+	contextLimit := s.Config.Model.ContextWindow * 9 / 10
+	if contextLimit > 0 && contextLimit < configured {
+		return contextLimit
+	}
+	return configured
+}
+
 // maybeCompactBeforeLLM performs proactive compaction if history exceeds the
-// configured token limit. Prevents context overflow errors on the next LLM call.
+// effective token limit. Also handles model-switch awareness: injects a
+// developer message about the switch and triggers compaction if needed.
 func (s *SessionState) maybeCompactBeforeLLM(ctx workflow.Context) {
-	if s.Config.AutoCompactTokenLimit > 0 && !s.compactedThisTurn {
+	if s.compactedThisTurn {
+		return
+	}
+
+	limit := s.effectiveAutoCompactLimit()
+	logger := workflow.GetLogger(ctx)
+
+	if s.modelSwitched {
+		// Consume the flag so it fires only once.
+		s.modelSwitched = false
+
+		// Inject a developer message so the new model knows about the switch.
+		switchMsg := fmt.Sprintf("<model_switch>\nThe user switched from model %q to %q "+
+			"(context window: %d tokens). Continue the conversation seamlessly.\n</model_switch>",
+			s.PreviousModel, s.Config.Model.Model, s.Config.Model.ContextWindow)
+		_ = s.History.AddItem(models.ConversationItem{
+			Type:    models.ItemTypeModelSwitch,
+			Content: switchMsg,
+		})
+		// Reset incremental sends since we modified the history.
+		s.lastSentHistoryLen = 0
+
+		// Check if compaction is needed after model switch.
+		if limit > 0 {
+			estimated, _ := s.History.EstimateTokenCount()
+			if estimated >= limit {
+				logger.Info("Model-switch compaction triggered",
+					"estimated_tokens", estimated,
+					"limit", limit,
+					"previous_model", s.PreviousModel,
+					"new_model", s.Config.Model.Model)
+				if err := s.performCompaction(ctx); err != nil {
+					logger.Warn("Model-switch compaction failed, continuing without", "error", err)
+				}
+			}
+		}
+		return
+	}
+
+	// Standard proactive compaction check.
+	if limit > 0 {
 		estimated, _ := s.History.EstimateTokenCount()
-		if estimated >= s.Config.AutoCompactTokenLimit {
-			logger := workflow.GetLogger(ctx)
+		if estimated >= limit {
 			logger.Info("Proactive compaction triggered",
 				"estimated_tokens", estimated,
-				"limit", s.Config.AutoCompactTokenLimit)
+				"limit", limit)
 			if err := s.performCompaction(ctx); err != nil {
 				logger.Warn("Proactive compaction failed, continuing without", "error", err)
 			}

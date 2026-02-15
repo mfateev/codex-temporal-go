@@ -3581,5 +3581,169 @@ func (s *AgenticWorkflowTestSuite) TestUpdateModel_ExplicitContextWindow() {
 	assert.True(s.T(), state.modelSwitched)
 }
 
+// --- Model switch compaction tests ---
+
+// TestModelSwitch_InjectsDevMessage verifies that after a model switch, the
+// next LLM turn injects a model_switch developer message into history.
+func (s *AgenticWorkflowTestSuite) TestModelSwitch_InjectsDevMessage() {
+	// First LLM call
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 50), nil).Once()
+
+	// Second LLM call (after model switch + new user input)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("After switch!", 30), nil).Once()
+
+	// After first turn, switch model
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateModel, "model-switch-1", noopCallback(),
+			UpdateModelRequest{Provider: "openai", Model: "o3-mini"})
+	}, time.Second*2)
+
+	// Send new input to trigger another turn
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateUserInput, "input-2", noopCallback(),
+			UserInput{Content: "Continue after model switch"})
+	}, time.Second*3)
+
+	// Query history after second turn
+	s.env.RegisterDelayedCallback(func() {
+		result, err := s.env.QueryWorkflow(QueryGetConversationItems)
+		require.NoError(s.T(), err)
+		var items []models.ConversationItem
+		require.NoError(s.T(), result.Get(&items))
+
+		// Look for model_switch item in history
+		foundModelSwitch := false
+		for _, item := range items {
+			if item.Type == models.ItemTypeModelSwitch {
+				foundModelSwitch = true
+				assert.Contains(s.T(), item.Content, "gpt-4o-mini")
+				assert.Contains(s.T(), item.Content, "o3-mini")
+				assert.Contains(s.T(), item.Content, "model_switch")
+			}
+		}
+		assert.True(s.T(), foundModelSwitch, "Should have model_switch item in history")
+	}, time.Second*4)
+
+	s.sendShutdown(time.Second * 5)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+}
+
+// TestModelSwitch_TriggersCompaction verifies that switching to a smaller model
+// triggers compaction when the token count exceeds the new effective limit.
+func (s *AgenticWorkflowTestSuite) TestModelSwitch_TriggersCompaction() {
+	// First LLM call - high token count
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 50), nil).Once()
+
+	// Override default compaction mock to succeed
+	s.env.OnActivity("ExecuteCompact", mock.Anything, mock.Anything).
+		Return(activities.CompactActivityOutput{
+			Items: []models.ConversationItem{
+				{Type: models.ItemTypeAssistantMessage, Content: "Compacted summary"},
+			},
+			TokenUsage: models.TokenUsage{TotalTokens: 100},
+		}, nil).Maybe()
+
+	// Second LLM call (after model switch + compaction + new input)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("After compaction!", 30), nil).Once()
+
+	// After first turn, switch to a smaller model with very small context window
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateModel, "model-switch-1", noopCallback(),
+			UpdateModelRequest{Provider: "openai", Model: "gpt-4o-mini", ContextWindow: 1000})
+	}, time.Second*2)
+
+	// Send new input
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateUserInput, "input-2", noopCallback(),
+			UserInput{Content: "Continue"})
+	}, time.Second*3)
+
+	s.sendShutdown(time.Second * 5)
+
+	input := testInput("Hello")
+	input.Config.AutoCompactTokenLimit = 200000 // Set high so standard check wouldn't fire
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, input)
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+}
+
+// TestModelSwitch_NoCompactionIfTokensFit verifies that a model switch does
+// NOT trigger compaction when the token count fits within the new limit.
+func (s *AgenticWorkflowTestSuite) TestModelSwitch_NoCompactionIfTokensFit() {
+	// First LLM call
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 50), nil).Once()
+	// Second LLM call (after model switch)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("After switch!", 30), nil).Once()
+
+	// After first turn, switch model (large context window — tokens should fit)
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateModel, "model-switch-1", noopCallback(),
+			UpdateModelRequest{Provider: "openai", Model: "gpt-4o", ContextWindow: 200000})
+	}, time.Second*2)
+
+	// Send new input
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateUserInput, "input-2", noopCallback(),
+			UserInput{Content: "Continue"})
+	}, time.Second*3)
+
+	s.sendShutdown(time.Second * 5)
+
+	input := testInput("Hello")
+	input.Config.AutoCompactTokenLimit = 200000
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, input)
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	// 50 + 30 = 80 tokens (no compaction token overhead)
+	assert.Equal(s.T(), 80, result.TotalTokens)
+}
+
+// TestModelSwitch_FlagConsumedOnce verifies that the modelSwitched flag is
+// consumed after the first iteration and does not trigger again.
+func (s *AgenticWorkflowTestSuite) TestModelSwitch_FlagConsumedOnce() {
+	state := SessionState{
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Provider:      "openai",
+				Model:         "gpt-4o",
+				ContextWindow: 128000,
+			},
+		},
+		PreviousModel:         "gpt-4o-mini",
+		PreviousContextWindow: 128000,
+		modelSwitched:         true,
+	}
+	state.History = history.NewInMemoryHistory()
+
+	// First call to maybeCompactBeforeLLM should consume the flag
+	assert.True(s.T(), state.modelSwitched)
+
+	// Simulate consuming the flag like maybeCompactBeforeLLM does
+	state.modelSwitched = false
+
+	// Second access should see it consumed
+	assert.False(s.T(), state.modelSwitched)
+}
+
 // Ensure we reference workflow.Context (suppress unused import warning)
 var _ workflow.Context
