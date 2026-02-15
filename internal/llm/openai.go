@@ -65,9 +65,9 @@ func (c *OpenAIClient) Call(ctx context.Context, request LLMRequest) (LLMRespons
 		}
 	}
 
-	// Tool definitions
-	if len(request.ToolSpecs) > 0 {
-		params.Tools = c.buildToolDefinitions(request.ToolSpecs)
+	// Tool definitions (function tools + optional web search)
+	if len(request.ToolSpecs) > 0 || request.WebSearchMode != "" {
+		params.Tools = c.buildToolDefinitions(request.ToolSpecs, request.WebSearchMode)
 	}
 
 	// Previous response ID for incremental sends
@@ -159,6 +159,18 @@ func (c *OpenAIClient) buildInput(history []models.ConversationItem) []responses
 				},
 			})
 
+		case models.ItemTypeWebSearchCall:
+			// Web search calls are fed back via OfWebSearchCall so the API
+			// maintains conversation state. We reconstruct the action union
+			// from the stored action type fields.
+			wsParam := &responses.ResponseFunctionWebSearchParam{
+				ID:     item.CallID,
+				Status: responses.ResponseFunctionWebSearchStatus(item.WebSearchStatus),
+			}
+			items = append(items, responses.ResponseInputItemUnionParam{
+				OfWebSearchCall: wsParam,
+			})
+
 		case models.ItemTypeCompaction:
 			// Compaction markers are internal tracking items. After compaction,
 			// the history contains a summary as an assistant message which is
@@ -231,6 +243,18 @@ func (c *OpenAIClient) parseOutput(resp *responses.Response) ([]models.Conversat
 				Name:      outputItem.Name,
 				Arguments: outputItem.Arguments,
 			})
+
+		case "web_search_call":
+			action, url := extractWebSearchAction(outputItem.Action)
+			detail := formatWebSearchDetail(action, outputItem.Action)
+			items = append(items, models.ConversationItem{
+				Type:            models.ItemTypeWebSearchCall,
+				CallID:          outputItem.ID,
+				Content:         detail,
+				WebSearchAction: action,
+				WebSearchStatus: outputItem.Status,
+				WebSearchURL:    url,
+			})
 		}
 	}
 
@@ -250,8 +274,11 @@ func (c *OpenAIClient) parseOutput(resp *responses.Response) ([]models.Conversat
 }
 
 // buildToolDefinitions converts ToolSpecs to Responses API tool definitions.
-func (c *OpenAIClient) buildToolDefinitions(specs []tools.ToolSpec) []responses.ToolUnionParam {
-	toolDefs := make([]responses.ToolUnionParam, 0, len(specs))
+// Also appends a web_search tool if WebSearchMode is set.
+//
+// Maps to: codex-rs/core/src/tools/spec.rs web_search_mode handling
+func (c *OpenAIClient) buildToolDefinitions(specs []tools.ToolSpec, webSearchMode models.WebSearchMode) []responses.ToolUnionParam {
+	toolDefs := make([]responses.ToolUnionParam, 0, len(specs)+1)
 
 	for _, spec := range specs {
 		properties := make(map[string]interface{})
@@ -280,6 +307,29 @@ func (c *OpenAIClient) buildToolDefinitions(specs []tools.ToolSpec) []responses.
 					"properties": properties,
 					"required":   required,
 				},
+			},
+		})
+	}
+
+	// Append web search tool if mode is not disabled/empty.
+	// Codex uses external_web_access (not in SDK v3), so we map to SearchContextSize:
+	//   cached → low (minimal context, faster)
+	//   live   → medium (default, fresh results)
+	//
+	// Maps to: codex-rs/core/src/tools/spec.rs web_search_mode → ToolSpec::WebSearch
+	switch webSearchMode {
+	case models.WebSearchCached:
+		toolDefs = append(toolDefs, responses.ToolUnionParam{
+			OfWebSearch: &responses.WebSearchToolParam{
+				Type:              responses.WebSearchToolTypeWebSearch,
+				SearchContextSize: responses.WebSearchToolSearchContextSizeLow,
+			},
+		})
+	case models.WebSearchLive:
+		toolDefs = append(toolDefs, responses.ToolUnionParam{
+			OfWebSearch: &responses.WebSearchToolParam{
+				Type:              responses.WebSearchToolTypeWebSearch,
+				SearchContextSize: responses.WebSearchToolSearchContextSizeMedium,
 			},
 		})
 	}
@@ -395,6 +445,58 @@ func parseCompactResponse(raw map[string]interface{}) ([]models.ConversationItem
 	}
 
 	return items, usage
+}
+
+// extractWebSearchAction extracts the action type and URL from a web search
+// output item's Action union field.
+//
+// Maps to: codex-rs/core/src/event_mapping.rs WebSearchCall handling
+func extractWebSearchAction(action responses.ResponseOutputItemUnionAction) (actionType, url string) {
+	actionType = action.Type
+	url = action.URL
+	return actionType, url
+}
+
+// formatWebSearchDetail formats a web search action for display, matching
+// Codex's web_search_action_detail function.
+//
+//	search       → query (or first of queries + "...")
+//	open_page    → URL
+//	find_in_page → 'pattern' in URL
+//
+// Maps to: codex-rs/core/src/web_search.rs web_search_action_detail
+func formatWebSearchDetail(actionType string, action responses.ResponseOutputItemUnionAction) string {
+	switch actionType {
+	case "search":
+		query := action.Query
+		if query != "" {
+			return query
+		}
+		if len(action.Queries) > 0 {
+			first := action.Queries[0]
+			if len(action.Queries) > 1 && first != "" {
+				return first + " ..."
+			}
+			return first
+		}
+		return ""
+	case "open_page":
+		return action.URL
+	case "find_in_page":
+		pattern := action.Pattern
+		url := action.URL
+		switch {
+		case pattern != "" && url != "":
+			return fmt.Sprintf("'%s' in %s", pattern, url)
+		case pattern != "":
+			return fmt.Sprintf("'%s'", pattern)
+		case url != "":
+			return url
+		}
+		return ""
+	default:
+		return ""
+	}
 }
 
 // isReasoningModel returns true for OpenAI reasoning models (o-series and codex)

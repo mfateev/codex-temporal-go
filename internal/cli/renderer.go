@@ -70,6 +70,8 @@ func (r *ItemRenderer) RenderItem(item models.ConversationItem, isResume bool) s
 		return r.RenderFunctionCall(item)
 	case models.ItemTypeFunctionCallOutput:
 		return r.RenderFunctionCallOutput(item)
+	case models.ItemTypeWebSearchCall:
+		return r.RenderWebSearchCall(item)
 	case models.ItemTypeCompaction:
 		return r.RenderCompaction(item)
 	case models.ItemTypeTurnComplete:
@@ -173,6 +175,47 @@ func (r *ItemRenderer) RenderFunctionCallOutput(item models.ConversationItem) st
 	}
 
 	return b.String()
+}
+
+// RenderWebSearchCall renders a web search call with action-specific formatting.
+// Matches Codex's web search display: "Searched: query" / "Opened page: URL" / etc.
+//
+// Maps to: codex-rs/tui/src/history_cell.rs WebSearchCell
+func (r *ItemRenderer) RenderWebSearchCall(item models.ConversationItem) string {
+	verb, detail := formatWebSearchCall(item.WebSearchAction, item.Content, item.WebSearchURL)
+	bullet := r.styles.ToolBullet.Render("●")
+	styledVerb := r.styles.ToolVerb.Render(verb)
+	if detail != "" {
+		return "\n" + bullet + " " + styledVerb + " " + detail + "\n"
+	}
+	return "\n" + bullet + " " + styledVerb + "\n"
+}
+
+// formatWebSearchCall returns the verb and detail for a web search action.
+//
+//	search       → ("Searched", query)
+//	open_page    → ("Opened page", URL)
+//	find_in_page → ("Searched page", "'pattern' in URL")
+//	unknown      → ("Searched web", "")
+//
+// Maps to: codex-rs/exec/src/event_processor_with_human_output.rs WebSearchEnd
+func formatWebSearchCall(action, content, url string) (verb, detail string) {
+	switch action {
+	case "search":
+		return "Searched", content
+	case "open_page":
+		if url != "" {
+			return "Opened page", url
+		}
+		return "Opened page", content
+	case "find_in_page":
+		return "Searched page", content
+	default:
+		if content != "" {
+			return "Searched", content
+		}
+		return "Searched web", ""
+	}
 }
 
 // renderApprovalEntry writes a single tool entry (title + optional preview box + reason)

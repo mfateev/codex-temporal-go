@@ -770,3 +770,94 @@ func TestFormatToolCall_UpdatePlan(t *testing.T) {
 	assert.Equal(t, "Updated", verb)
 	assert.Equal(t, "plan", detail)
 }
+
+// --- Web search rendering tests ---
+
+func TestItemRenderer_RenderWebSearchCall_Search(t *testing.T) {
+	r := newTestRenderer()
+	result := r.RenderItem(models.ConversationItem{
+		Type:            models.ItemTypeWebSearchCall,
+		CallID:          "ws_1",
+		WebSearchAction: "search",
+		WebSearchStatus: "completed",
+		Content:         "Go generics tutorial",
+	}, false)
+
+	assert.NotEmpty(t, result)
+	assert.Contains(t, result, "●")
+	assert.Contains(t, result, "Searched")
+	assert.Contains(t, result, "Go generics tutorial")
+}
+
+func TestItemRenderer_RenderWebSearchCall_OpenPage(t *testing.T) {
+	r := newTestRenderer()
+	result := r.RenderItem(models.ConversationItem{
+		Type:            models.ItemTypeWebSearchCall,
+		CallID:          "ws_2",
+		WebSearchAction: "open_page",
+		WebSearchStatus: "completed",
+		Content:         "https://example.com/docs",
+		WebSearchURL:    "https://example.com/docs",
+	}, false)
+
+	assert.NotEmpty(t, result)
+	assert.Contains(t, result, "●")
+	assert.Contains(t, result, "Opened page")
+	assert.Contains(t, result, "https://example.com/docs")
+}
+
+func TestItemRenderer_RenderWebSearchCall_FindInPage(t *testing.T) {
+	r := newTestRenderer()
+	result := r.RenderItem(models.ConversationItem{
+		Type:            models.ItemTypeWebSearchCall,
+		CallID:          "ws_3",
+		WebSearchAction: "find_in_page",
+		WebSearchStatus: "completed",
+		Content:         "'installation' in https://example.com/docs",
+		WebSearchURL:    "https://example.com/docs",
+	}, false)
+
+	assert.NotEmpty(t, result)
+	assert.Contains(t, result, "●")
+	assert.Contains(t, result, "Searched page")
+	assert.Contains(t, result, "'installation' in https://example.com/docs")
+}
+
+func TestItemRenderer_RenderWebSearchCall_Unknown(t *testing.T) {
+	r := newTestRenderer()
+	result := r.RenderItem(models.ConversationItem{
+		Type:            models.ItemTypeWebSearchCall,
+		CallID:          "ws_4",
+		WebSearchAction: "",
+		WebSearchStatus: "completed",
+	}, false)
+
+	assert.NotEmpty(t, result)
+	assert.Contains(t, result, "Searched web")
+}
+
+func TestFormatWebSearchCall(t *testing.T) {
+	tests := []struct {
+		name       string
+		action     string
+		content    string
+		url        string
+		wantVerb   string
+		wantDetail string
+	}{
+		{"search", "search", "weather NYC", "", "Searched", "weather NYC"},
+		{"open_page with url", "open_page", "", "https://example.com", "Opened page", "https://example.com"},
+		{"open_page fallback to content", "open_page", "https://example.com", "", "Opened page", "https://example.com"},
+		{"find_in_page", "find_in_page", "'TODO' in page.html", "page.html", "Searched page", "'TODO' in page.html"},
+		{"unknown with content", "", "some query", "", "Searched", "some query"},
+		{"unknown empty", "", "", "", "Searched web", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verb, detail := formatWebSearchCall(tt.action, tt.content, tt.url)
+			assert.Equal(t, tt.wantVerb, verb)
+			assert.Equal(t, tt.wantDetail, detail)
+		})
+	}
+}

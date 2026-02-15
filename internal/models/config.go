@@ -78,6 +78,17 @@ func DefaultToolsConfig() ToolsConfig {
 	}
 }
 
+// WebSearchMode controls whether web search is enabled and its freshness.
+//
+// Maps to: codex-rs/protocol/src/config_types.rs WebSearchMode
+type WebSearchMode string
+
+const (
+	WebSearchDisabled WebSearchMode = "disabled"
+	WebSearchCached   WebSearchMode = "cached"
+	WebSearchLive     WebSearchMode = "live"
+)
+
 // ApprovalMode controls when the user is prompted before tool execution.
 //
 // Maps to: codex-rs/protocol/src/protocol.rs AskForApproval
@@ -135,6 +146,10 @@ type SessionConfiguration struct {
 	// history exceeds this limit, proactive compaction is triggered. 0 = disabled.
 	// Maps to: codex-rs auto_compact_token_limit
 	AutoCompactTokenLimit int `json:"auto_compact_token_limit,omitempty"`
+
+	// Web search configuration
+	// Maps to: codex-rs web_search_mode
+	WebSearchMode WebSearchMode `json:"web_search_mode,omitempty"`
 
 	// Disable post-turn prompt suggestions
 	DisableSuggestions bool `json:"disable_suggestions,omitempty"`

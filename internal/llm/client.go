@@ -27,6 +27,9 @@ type LLMRequest struct {
 
 	// OpenAI Responses API: chain to previous response for incremental sends
 	PreviousResponseID string `json:"previous_response_id,omitempty"`
+
+	// Web search mode (maps to Codex web_search_mode config)
+	WebSearchMode models.WebSearchMode `json:"web_search_mode,omitempty"`
 }
 
 // LLMResponse represents a response from the LLM.
