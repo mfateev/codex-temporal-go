@@ -11,9 +11,9 @@ import (
 
 	"github.com/mfateev/temporal-agent-harness/internal/models"
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/responses"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +33,8 @@ func TestBuildInput_UserMessage(t *testing.T) {
 	require.NotNil(t, items[0].OfMessage, "should be an EasyInputMessageParam")
 	assert.Equal(t, responses.EasyInputMessageRoleUser, items[0].OfMessage.Role)
 
-	// Verify content is set as string
+	// Verify content is set as string via param.Opt
+	assert.True(t, items[0].OfMessage.Content.OfString.Valid())
 	assert.Equal(t, "hello", items[0].OfMessage.Content.OfString.Value)
 }
 
@@ -88,7 +89,8 @@ func TestBuildInput_FunctionCallOutput(t *testing.T) {
 	require.Len(t, items, 1)
 	require.NotNil(t, items[0].OfFunctionCallOutput, "should be ResponseInputItemFunctionCallOutputParam")
 	assert.Equal(t, "call_123", items[0].OfFunctionCallOutput.CallID)
-	assert.Equal(t, "file.txt\ndir/", items[0].OfFunctionCallOutput.Output)
+	assert.True(t, items[0].OfFunctionCallOutput.Output.OfString.Valid())
+	assert.Equal(t, "file.txt\ndir/", items[0].OfFunctionCallOutput.Output.OfString.Value)
 }
 
 // TestBuildInput_FunctionCallOutput_NilOutput verifies nil output payload produces empty content.
@@ -102,7 +104,8 @@ func TestBuildInput_FunctionCallOutput_NilOutput(t *testing.T) {
 
 	require.Len(t, items, 1)
 	require.NotNil(t, items[0].OfFunctionCallOutput)
-	assert.Equal(t, "", items[0].OfFunctionCallOutput.Output)
+	assert.True(t, items[0].OfFunctionCallOutput.Output.OfString.Valid())
+	assert.Equal(t, "", items[0].OfFunctionCallOutput.Output.OfString.Value)
 }
 
 // TestBuildInput_SkipsTurnMarkers verifies that turn_started and turn_complete
@@ -179,6 +182,7 @@ func TestBuildToolDefinitions(t *testing.T) {
 	require.Len(t, defs, 1)
 	require.NotNil(t, defs[0].OfFunction)
 	assert.Equal(t, "shell", defs[0].OfFunction.Name)
+	assert.True(t, defs[0].OfFunction.Description.Valid())
 	assert.Equal(t, "Execute a shell command", defs[0].OfFunction.Description.Value)
 
 	params, ok := defs[0].OfFunction.Parameters["properties"].(map[string]interface{})
@@ -511,7 +515,7 @@ func fakeResponsesAPIResponse() string {
 			"status": "completed",
 			"content": [{"type": "output_text", "text": "Hello!", "annotations": []}]
 		}],
-		"usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+		"usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15, "input_tokens_details": {"cached_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}},
 		"parallel_tool_calls": true,
 		"temperature": 1.0,
 		"top_p": 1.0,

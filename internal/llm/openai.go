@@ -9,10 +9,11 @@ import (
 
 	"github.com/mfateev/temporal-agent-harness/internal/models"
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/responses"
-	"github.com/openai/openai-go/shared"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 // OpenAIClient implements LLMClient using OpenAI's Responses API.
@@ -46,15 +47,15 @@ func (c *OpenAIClient) Call(ctx context.Context, request LLMRequest) (LLMRespons
 	// Instructions (combined base + user)
 	instructions := c.buildInstructions(request)
 	if instructions != "" {
-		params.Instructions = openai.String(instructions)
+		params.Instructions = param.NewOpt(instructions)
 	}
 
 	// Model parameters — reasoning models (o-series, codex) reject temperature
 	if request.ModelConfig.Temperature > 0 && !isReasoningModel(request.ModelConfig.Model) {
-		params.Temperature = openai.Float(request.ModelConfig.Temperature)
+		params.Temperature = param.NewOpt(request.ModelConfig.Temperature)
 	}
 	if request.ModelConfig.MaxTokens > 0 {
-		params.MaxOutputTokens = openai.Int(int64(request.ModelConfig.MaxTokens))
+		params.MaxOutputTokens = param.NewOpt(int64(request.ModelConfig.MaxTokens))
 	}
 
 	// Reasoning effort for reasoning models (o-series, codex)
@@ -71,11 +72,11 @@ func (c *OpenAIClient) Call(ctx context.Context, request LLMRequest) (LLMRespons
 
 	// Previous response ID for incremental sends
 	if request.PreviousResponseID != "" {
-		params.PreviousResponseID = openai.String(request.PreviousResponseID)
+		params.PreviousResponseID = param.NewOpt(request.PreviousResponseID)
 	}
 
 	// Store for response persistence
-	params.Store = openai.Bool(true)
+	params.Store = param.NewOpt(true)
 
 	resp, err := c.client.Responses.New(ctx, params)
 	if err != nil {
@@ -115,7 +116,7 @@ func (c *OpenAIClient) buildInput(history []models.ConversationItem) []responses
 				OfMessage: &responses.EasyInputMessageParam{
 					Role: responses.EasyInputMessageRoleUser,
 					Content: responses.EasyInputMessageContentUnionParam{
-						OfString: openai.String(item.Content),
+						OfString: param.NewOpt(item.Content),
 					},
 				},
 			})
@@ -152,7 +153,9 @@ func (c *OpenAIClient) buildInput(history []models.ConversationItem) []responses
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 					CallID: item.CallID,
-					Output: content,
+					Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
+						OfString: param.NewOpt(content),
+					},
 				},
 			})
 
@@ -271,7 +274,7 @@ func (c *OpenAIClient) buildToolDefinitions(specs []tools.ToolSpec) []responses.
 		toolDefs = append(toolDefs, responses.ToolUnionParam{
 			OfFunction: &responses.FunctionToolParam{
 				Name:        spec.Name,
-				Description: openai.String(spec.Description),
+				Description: param.NewOpt(spec.Description),
 				Parameters: map[string]interface{}{
 					"type":       "object",
 					"properties": properties,
