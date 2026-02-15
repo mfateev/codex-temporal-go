@@ -8,8 +8,8 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	anthropicopt "github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/openai/openai-go"
-	openaiopt "github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3"
+	openaiopt "github.com/openai/openai-go/v3/option"
 )
 
 // AvailableModel describes a model returned by a provider's list-models API.
