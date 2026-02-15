@@ -66,8 +66,9 @@ const (
 
 // UpdateModelRequest is the payload for the update_model Update.
 type UpdateModelRequest struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	ContextWindow int    `json:"context_window,omitempty"` // Explicit context window override; 0 = resolve from profile
 }
 
 // UpdateModelResponse is returned by the update_model Update.
@@ -328,6 +329,11 @@ type SessionState struct {
 	// Context compaction tracking
 	CompactionCount   int  `json:"compaction_count"`   // How many times compaction has occurred
 	compactedThisTurn bool `json:"-"`                  // Prevents double compaction in one turn
+
+	// Model switch tracking (persists across ContinueAsNew except modelSwitched)
+	PreviousModel         string `json:"previous_model,omitempty"`          // Model before last switch
+	PreviousContextWindow int    `json:"previous_context_window,omitempty"` // Context window before last switch
+	modelSwitched         bool   `json:"-"`                                 // Transient: set on model switch, consumed by maybeCompactBeforeLLM
 
 	// Repeated tool call detection (transient — not serialized)
 	lastToolKey string `json:"-"`

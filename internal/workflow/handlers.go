@@ -168,10 +168,31 @@ func (s *SessionState) registerHandlers(ctx workflow.Context) {
 		ctx,
 		UpdateModel,
 		func(ctx workflow.Context, req UpdateModelRequest) (UpdateModelResponse, error) {
+			// Save previous model info before overwriting.
+			s.PreviousModel = s.Config.Model.Model
+			s.PreviousContextWindow = s.Config.Model.ContextWindow
+
+			// Apply new provider/model.
 			s.Config.Model.Provider = req.Provider
 			s.Config.Model.Model = req.Model
-			// Reset response chaining when switching models.
+
+			// Re-resolve the model profile so ContextWindow, Temperature,
+			// MaxTokens reflect the new model's defaults from the registry.
+			s.resolveProfile()
+
+			// If the caller supplied an explicit context window, override the profile.
+			if req.ContextWindow > 0 {
+				s.Config.Model.ContextWindow = req.ContextWindow
+			}
+
+			// Reset response chaining and incremental history tracking.
 			s.LastResponseID = ""
+			s.lastSentHistoryLen = 0
+
+			// Flag for maybeCompactBeforeLLM to inject a model-switch message
+			// and trigger proactive compaction if needed.
+			s.modelSwitched = true
+
 			return UpdateModelResponse{Acknowledged: true}, nil
 		},
 		workflow.UpdateHandlerOptions{

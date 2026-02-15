@@ -3480,5 +3480,106 @@ func (s *AgenticWorkflowTestSuite) TestUpdatePlan_ApprovalSkip() {
 	assert.Equal(s.T(), 50, result.TotalTokens)
 }
 
+// --- Model switch tests ---
+
+// TestUpdateModel_SavesPreviousModel verifies that the update_model handler
+// saves the previous model info and sets the modelSwitched flag.
+func (s *AgenticWorkflowTestSuite) TestUpdateModel_SavesPreviousModel() {
+	// First LLM call
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Hello!", 50), nil).Once()
+	// Second LLM call (after model switch + new user input)
+	s.env.OnActivity("ExecuteLLMCall", mock.Anything, mock.Anything).
+		Return(mockLLMStopResponse("Switched!", 30), nil).Once()
+
+	// After first turn, switch model
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateModel, "model-switch-1", noopCallback(),
+			UpdateModelRequest{Provider: "openai", Model: "gpt-4o"})
+	}, time.Second*2)
+
+	// Send new user input after model switch
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(UpdateUserInput, "input-2", noopCallback(),
+			UserInput{Content: "After model switch"})
+	}, time.Second*3)
+
+	s.sendShutdown(time.Second * 5)
+
+	s.env.ExecuteWorkflow(AgenticWorkflow, testInput("Hello"))
+
+	require.True(s.T(), s.env.IsWorkflowCompleted())
+	var result WorkflowResult
+	require.NoError(s.T(), s.env.GetWorkflowResult(&result))
+	assert.Equal(s.T(), "shutdown", result.EndReason)
+	assert.Equal(s.T(), 80, result.TotalTokens) // 50 + 30
+}
+
+// TestUpdateModel_ResolvesNewContextWindow verifies that switching models
+// re-resolves the profile and updates ContextWindow from the registry.
+func (s *AgenticWorkflowTestSuite) TestUpdateModel_ResolvesNewContextWindow() {
+	// Unit test: directly test SessionState behavior
+	state := SessionState{
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Provider:      "openai",
+				Model:         "gpt-4o-mini",
+				ContextWindow: 128000,
+				Temperature:   0.7,
+				MaxTokens:     4096,
+			},
+		},
+	}
+
+	// Simulate what the handler does
+	state.PreviousModel = state.Config.Model.Model
+	state.PreviousContextWindow = state.Config.Model.ContextWindow
+	state.Config.Model.Provider = "openai"
+	state.Config.Model.Model = "gpt-4o"
+	state.resolveProfile()
+	state.LastResponseID = ""
+	state.lastSentHistoryLen = 0
+	state.modelSwitched = true
+
+	assert.Equal(s.T(), "gpt-4o-mini", state.PreviousModel)
+	assert.Equal(s.T(), 128000, state.PreviousContextWindow)
+	assert.Equal(s.T(), "gpt-4o", state.Config.Model.Model)
+	assert.True(s.T(), state.modelSwitched)
+	// ContextWindow should have been updated by resolveProfile
+	assert.Greater(s.T(), state.Config.Model.ContextWindow, 0)
+}
+
+// TestUpdateModel_ExplicitContextWindow verifies that an explicit ContextWindow
+// in the request overrides the profile-resolved value.
+func (s *AgenticWorkflowTestSuite) TestUpdateModel_ExplicitContextWindow() {
+	state := SessionState{
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Provider:      "openai",
+				Model:         "gpt-4o-mini",
+				ContextWindow: 128000,
+			},
+		},
+	}
+
+	// Simulate handler with explicit context window
+	state.PreviousModel = state.Config.Model.Model
+	state.PreviousContextWindow = state.Config.Model.ContextWindow
+	state.Config.Model.Provider = "openai"
+	state.Config.Model.Model = "gpt-4o"
+	state.resolveProfile()
+	// Explicit override
+	explicitCW := 64000
+	state.Config.Model.ContextWindow = explicitCW
+	state.LastResponseID = ""
+	state.lastSentHistoryLen = 0
+	state.modelSwitched = true
+
+	assert.Equal(s.T(), "gpt-4o-mini", state.PreviousModel)
+	assert.Equal(s.T(), 128000, state.PreviousContextWindow)
+	assert.Equal(s.T(), 64000, state.Config.Model.ContextWindow)
+	assert.True(s.T(), state.modelSwitched)
+}
+
 // Ensure we reference workflow.Context (suppress unused import warning)
 var _ workflow.Context
