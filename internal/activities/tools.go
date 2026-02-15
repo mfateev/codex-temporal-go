@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"go.temporal.io/sdk/activity"
+
 	"github.com/mfateev/temporal-agent-harness/internal/models"
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
@@ -64,6 +66,9 @@ func (a *ToolActivities) ExecuteTool(ctx context.Context, input ToolActivityInpu
 		Cwd:           input.Cwd,
 		SandboxPolicy: input.SandboxPolicy,
 		EnvPolicy:     input.EnvPolicy,
+		Heartbeat: func(details ...interface{}) {
+			activity.RecordHeartbeat(ctx, details...)
+		},
 	}
 
 	// Pass the activity context to the handler. Temporal manages timeouts

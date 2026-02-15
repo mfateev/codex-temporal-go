@@ -11,6 +11,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/mfateev/temporal-agent-harness/internal/activities"
+	"github.com/mfateev/temporal-agent-harness/internal/execsession"
 	"github.com/mfateev/temporal-agent-harness/internal/llm"
 	"github.com/mfateev/temporal-agent-harness/internal/temporalclient"
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
@@ -65,6 +66,11 @@ func main() {
 	toolRegistry.Register(handlers.NewListDirTool())
 	toolRegistry.Register(handlers.NewGrepFilesTool())
 	toolRegistry.Register(handlers.NewApplyPatchTool())
+
+	// Unified exec: interactive PTY/pipe sessions (exec_command + write_stdin)
+	execStore := execsession.NewStore()
+	toolRegistry.Register(handlers.NewExecCommandHandler(execStore))
+	toolRegistry.Register(handlers.NewWriteStdinHandler(execStore))
 
 	log.Printf("Registered %d tools", toolRegistry.ToolCount())
 

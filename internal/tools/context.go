@@ -36,6 +36,11 @@ type ToolInvocation struct {
 
 	// EnvPolicy, if set, filters environment variables before execution.
 	EnvPolicy *EnvPolicyRef `json:"env_policy,omitempty"`
+
+	// Heartbeat, if set, is called periodically during long-running tool
+	// execution to keep the Temporal activity alive. Set by the activity
+	// layer; nil in unit tests.
+	Heartbeat func(details ...interface{}) `json:"-"`
 }
 
 // SandboxPolicyRef is a serializable reference to a sandbox policy.

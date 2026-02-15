@@ -27,6 +27,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/mfateev/temporal-agent-harness/internal/activities"
+	"github.com/mfateev/temporal-agent-harness/internal/execsession"
 	"github.com/mfateev/temporal-agent-harness/internal/llm"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
@@ -242,6 +243,11 @@ func createWorker(c client.Client) worker.Worker {
 	toolRegistry.Register(handlers.NewListDirTool())
 	toolRegistry.Register(handlers.NewGrepFilesTool())
 	toolRegistry.Register(handlers.NewApplyPatchTool())
+
+	// Unified exec: interactive PTY/pipe sessions (exec_command + write_stdin)
+	execStore := execsession.NewStore()
+	toolRegistry.Register(handlers.NewExecCommandHandler(execStore))
+	toolRegistry.Register(handlers.NewWriteStdinHandler(execStore))
 
 	// Create multi-provider LLM client
 	llmClient := llm.NewMultiProviderClient()
@@ -1685,6 +1691,39 @@ func TestAgenticWorkflow_UpdatePlan(t *testing.T) {
 
 	t.Logf("UpdatePlan - Total tokens: %d, Cached: %d, Iterations: %d",
 		result.TotalTokens, result.TotalCachedTokens, result.TotalIterations)
+}
+
+// TestAgenticWorkflow_ExecCommand tests the exec_command tool for running
+// a command and receiving output with session persistence.
+func TestAgenticWorkflow_ExecCommand(t *testing.T) {
+	t.Parallel()
+	c := dialTemporal(t)
+
+	workflowID := "test-exec-cmd-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage: "You MUST use the exec_command tool (not shell or shell_command) to run this exact command: echo 'exec test output'. " +
+			"Do NOT answer without calling exec_command first. After getting the result, report the output.",
+		Config: testSessionConfig(500, models.ToolsConfig{
+			EnabledTools: []string{"exec_command", "write_stdin"},
+		}),
+	}
+
+	t.Logf("Starting workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+
+	assert.Equal(t, workflowID, result.ConversationID)
+	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens")
+	assert.Contains(t, result.ToolCallsExecuted, "exec_command", "Should have called exec_command tool")
+
+	t.Logf("ExecCommand - Total tokens: %d, Iterations: %d, Tools: %v",
+		result.TotalTokens, result.TotalIterations, result.ToolCallsExecuted)
 }
 
 // truncateStr truncates a string to n characters with "..." appended.

@@ -82,6 +82,12 @@ func executeToolsInParallel(ctx workflow.Context, functionCalls []models.Convers
 				MaximumAttempts:    5,
 			},
 		}
+		// exec_command and write_stdin are long-running activities that
+		// heartbeat during output collection. Set HeartbeatTimeout so
+		// Temporal can detect stuck activities.
+		if fc.Name == "exec_command" || fc.Name == "write_stdin" {
+			actOpts.HeartbeatTimeout = 15 * time.Second
+		}
 		if sessionTaskQueue != "" {
 			actOpts.TaskQueue = sessionTaskQueue
 		}
