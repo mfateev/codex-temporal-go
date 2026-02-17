@@ -23,27 +23,25 @@ var collabInputItemsSchema = map[string]interface{}{
 	"properties": map[string]interface{}{
 		"type": map[string]interface{}{
 			"type":        "string",
-			"description": "The type of this content item.",
-			"enum":        []string{"text", "image_url", "path"},
+			"description": "Input item type: text, image, local_image, skill, or mention.",
 		},
 		"text": map[string]interface{}{
 			"type":        "string",
-			"description": "Text content (when type is 'text').",
+			"description": "Text content when type is text.",
 		},
 		"image_url": map[string]interface{}{
 			"type":        "string",
-			"description": "URL of the image (when type is 'image_url').",
+			"description": "Image URL when type is image.",
 		},
 		"path": map[string]interface{}{
 			"type":        "string",
-			"description": "File path (when type is 'path').",
+			"description": "Path when type is local_image/skill, or mention target such as app://<connector-id> when type is mention.",
 		},
 		"name": map[string]interface{}{
 			"type":        "string",
-			"description": "Optional display name for this item.",
+			"description": "Display name when type is skill or mention.",
 		},
 	},
-	"required": []string{"type"},
 }
 
 // NewSpawnAgentToolSpec creates the specification for the spawn_agent tool.

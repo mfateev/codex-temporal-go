@@ -76,9 +76,10 @@ func approvalParameters(includePrefixRule bool) []ToolParameter {
 	if includePrefixRule {
 		params = append(params, ToolParameter{
 			Name:        "prefix_rule",
-			Type:        "string",
-			Description: "Known-safe command prefix that matches an allow rule.",
+			Type:        "array",
+			Description: `Only specify when sandbox_permissions is "require_escalated". Suggest a prefix command pattern that will allow you to fulfill similar requests from the user in the future.`,
 			Required:    false,
+			Items:       map[string]interface{}{"type": "string"},
 		})
 	}
 	return params

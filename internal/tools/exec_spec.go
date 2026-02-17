@@ -63,7 +63,7 @@ func NewExecCommandToolSpec() ToolSpec {
 			Required:    false,
 		},
 	}
-	params = append(params, approvalParameters(false)...)
+	params = append(params, approvalParameters(true)...)
 
 	return ToolSpec{
 		Name: "exec_command",

@@ -786,23 +786,41 @@ func TestParseCollabInput(t *testing.T) {
 		assert.Contains(t, err.Error(), "required")
 	})
 
-	t.Run("items with no text items rejected", func(t *testing.T) {
+	t.Run("items with no content rejected", func(t *testing.T) {
 		items := []collabInputItem{
-			{Type: "image_url", ImageURL: "https://example.com/img.png"},
+			{Type: "unknown_type"},
 		}
 		_, err := parseCollabInput(nil, items)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "text item")
+		assert.Contains(t, err.Error(), "item with content")
 	})
 
-	t.Run("items skips non-text items", func(t *testing.T) {
+	t.Run("items includes all supported types", func(t *testing.T) {
 		items := []collabInputItem{
-			{Type: "image_url", ImageURL: "https://example.com/img.png"},
+			{Type: "image", ImageURL: "https://example.com/img.png"},
 			{Type: "text", Text: "the actual task"},
-			{Type: "path", Path: "/some/file"},
+			{Type: "local_image", Path: "/some/file"},
 		}
 		msg, err := parseCollabInput(nil, items)
 		require.NoError(t, err)
-		assert.Equal(t, "the actual task", msg)
+		assert.Equal(t, "[image: https://example.com/img.png]\nthe actual task\n[local_image: /some/file]", msg)
+	})
+
+	t.Run("skill item includes name and path", func(t *testing.T) {
+		items := []collabInputItem{
+			{Type: "skill", Name: "my-skill", Path: "/path/to/skill"},
+		}
+		msg, err := parseCollabInput(nil, items)
+		require.NoError(t, err)
+		assert.Equal(t, "[skill: my-skill (/path/to/skill)]", msg)
+	})
+
+	t.Run("mention item includes name and path", func(t *testing.T) {
+		items := []collabInputItem{
+			{Type: "mention", Name: "connector", Path: "app://connector-id"},
+		}
+		msg, err := parseCollabInput(nil, items)
+		require.NoError(t, err)
+		assert.Equal(t, "[mention: connector (app://connector-id)]", msg)
 	})
 }
