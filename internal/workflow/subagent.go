@@ -211,15 +211,42 @@ func parseCollabInput(message *string, items []collabInputItem) (string, error) 
 		return *message, nil
 	}
 
-	// Extract text from items
+	// Extract text from items — handle all Codex content item types.
 	var texts []string
 	for _, item := range items {
-		if item.Type == "text" && item.Text != "" {
-			texts = append(texts, item.Text)
+		switch item.Type {
+		case "text":
+			if item.Text != "" {
+				texts = append(texts, item.Text)
+			}
+		case "image":
+			if item.ImageURL != "" {
+				texts = append(texts, fmt.Sprintf("[image: %s]", item.ImageURL))
+			}
+		case "local_image":
+			if item.Path != "" {
+				texts = append(texts, fmt.Sprintf("[local_image: %s]", item.Path))
+			}
+		case "skill":
+			ref := item.Name
+			if item.Path != "" {
+				ref += " (" + item.Path + ")"
+			}
+			if ref != "" {
+				texts = append(texts, fmt.Sprintf("[skill: %s]", ref))
+			}
+		case "mention":
+			ref := item.Name
+			if item.Path != "" {
+				ref += " (" + item.Path + ")"
+			}
+			if ref != "" {
+				texts = append(texts, fmt.Sprintf("[mention: %s]", ref))
+			}
 		}
 	}
 	if len(texts) == 0 {
-		return "", fmt.Errorf("items must contain at least one text item")
+		return "", fmt.Errorf("items must contain at least one item with content")
 	}
 	return strings.Join(texts, "\n"), nil
 }
