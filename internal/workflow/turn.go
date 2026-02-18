@@ -26,7 +26,7 @@ func (s *SessionState) runAgenticTurn(ctx workflow.Context) (bool, error) {
 	logger := workflow.GetLogger(ctx)
 	s.compactedThisTurn = false
 	gate := NewApprovalGate(s.Config.ApprovalMode, s.ExecPolicyRules)
-	executor := NewToolExecutor(s.ToolSpecs, s.Config.Cwd, s.Config.SessionTaskQueue)
+	executor := NewToolsExecutor(s.ToolSpecs, s.Config.Cwd, s.Config.SessionTaskQueue)
 
 	for s.IterationCount < s.MaxIterations {
 		if s.Interrupted {
@@ -355,7 +355,7 @@ func (s *SessionState) dispatchInterceptedCalls(ctx workflow.Context, calls []mo
 func (s *SessionState) approveAndExecuteTools(
 	ctx workflow.Context,
 	gate *ApprovalGate,
-	executor *ToolExecutor,
+	executor *ToolsExecutor,
 	functionCalls []models.ConversationItem,
 ) (bool, error) {
 	logger := workflow.GetLogger(ctx)
