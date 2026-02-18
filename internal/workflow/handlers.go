@@ -70,7 +70,7 @@ func (s *SessionState) registerHandlers(ctx workflow.Context, ctrl *LoopControl)
 		ctx,
 		UpdateUserInput,
 		func(ctx workflow.Context, input UserInput) (UserInputAccepted, error) {
-			turnID := generateTurnID(ctx)
+			turnID := s.nextTurnID()
 
 			// Add TurnStarted marker
 			if err := s.History.AddItem(models.ConversationItem{
@@ -395,7 +395,7 @@ func (s *SessionState) registerHandlers(ctx workflow.Context, ctrl *LoopControl)
 				ctrl.SetInterrupted()
 			}
 
-			turnID := generateTurnID(gCtx)
+			turnID := s.nextTurnID()
 			_ = s.History.AddItem(models.ConversationItem{
 				Type:   models.ItemTypeTurnStarted,
 				TurnID: turnID,

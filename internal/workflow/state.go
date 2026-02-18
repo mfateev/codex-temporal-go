@@ -316,6 +316,10 @@ type SessionState struct {
 	lastToolKey string `json:"-"`
 	repeatCount int    `json:"-"`
 
+	// Turn counter incremented each time a new turn ID is generated.
+	// Persists across ContinueAsNew so turn IDs are monotonically increasing.
+	TurnCounter int `json:"turn_counter"`
+
 	// Cumulative stats (persist across ContinueAsNew)
 	TotalTokens       int      `json:"total_tokens"`
 	TotalCachedTokens int      `json:"total_cached_tokens"`

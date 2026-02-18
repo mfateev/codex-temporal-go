@@ -51,7 +51,7 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 	state.loadExecPolicy(ctx)
 
 	// Generate initial turn ID
-	turnID := generateTurnID(ctx)
+	turnID := state.nextTurnID()
 
 	// Add initial TurnStarted marker
 	if err := state.History.AddItem(models.ConversationItem{
