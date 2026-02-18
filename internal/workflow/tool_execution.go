@@ -19,21 +19,21 @@ import (
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
-// ToolExecutor handles parallel tool activity dispatch.
-type ToolExecutor struct {
+// ToolsExecutor handles parallel tool activity dispatch.
+type ToolsExecutor struct {
 	toolSpecs        []tools.ToolSpec
 	cwd              string
 	sessionTaskQueue string
 }
 
-// NewToolExecutor creates a ToolExecutor with the given specs, working directory, and task queue.
-func NewToolExecutor(specs []tools.ToolSpec, cwd, taskQueue string) *ToolExecutor {
-	return &ToolExecutor{toolSpecs: specs, cwd: cwd, sessionTaskQueue: taskQueue}
+// NewToolsExecutor creates a ToolsExecutor with the given specs, working directory, and task queue.
+func NewToolsExecutor(specs []tools.ToolSpec, cwd, taskQueue string) *ToolsExecutor {
+	return &ToolsExecutor{toolSpecs: specs, cwd: cwd, sessionTaskQueue: taskQueue}
 }
 
 // ExecuteParallel runs all tool activities in parallel and waits for all.
 // Delegates to executeToolsInParallel.
-func (e *ToolExecutor) ExecuteParallel(ctx workflow.Context, calls []models.ConversationItem) ([]activities.ToolActivityOutput, error) {
+func (e *ToolsExecutor) ExecuteParallel(ctx workflow.Context, calls []models.ConversationItem) ([]activities.ToolActivityOutput, error) {
 	return executeToolsInParallel(ctx, calls, e.toolSpecs, e.cwd, e.sessionTaskQueue)
 }
 

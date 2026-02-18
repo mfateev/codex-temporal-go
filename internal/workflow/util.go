@@ -8,19 +8,14 @@ import (
 	"fmt"
 	"sort"
 
-	"go.temporal.io/sdk/workflow"
-
 	"github.com/mfateev/temporal-agent-harness/internal/models"
 )
 
-// generateTurnID generates a unique turn ID using Temporal's SideEffect.
-func generateTurnID(ctx workflow.Context) string {
-	var nanos int64
-	encoded := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
-		return workflow.Now(ctx).UnixNano()
-	})
-	_ = encoded.Get(&nanos)
-	return fmt.Sprintf("turn-%d", nanos)
+// nextTurnID increments the session turn counter and returns a unique turn ID.
+// Using a counter rather than a side-effect keeps determinism without Temporal overhead.
+func (s *SessionState) nextTurnID() string {
+	s.TurnCounter++
+	return fmt.Sprintf("turn-%d", s.TurnCounter)
 }
 
 // truncate returns s truncated to n bytes with "..." appended if it was longer.
