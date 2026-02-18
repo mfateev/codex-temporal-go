@@ -945,6 +945,89 @@ func TestAgenticWorkflow_AnthropicWithTools(t *testing.T) {
 		result.TotalTokens, result.TotalIterations, result.ToolCallsExecuted)
 }
 
+// TestAgenticWorkflow_AnthropicCaching validates that Anthropic prompt caching is
+// active end-to-end through the full Temporal workflow stack. After a second LLM
+// turn the built-in base system prompt (≈3 300 tokens, well above Anthropic's
+// 2 048-token cache minimum) must be served from cache, so TotalCachedTokens > 0.
+//
+// Flow: start workflow → turn 1 (cache write) → send turn 2 (cache read) →
+// assert TurnStatus.TotalCachedTokens > 0 → assert WorkflowResult.TotalCachedTokens > 0.
+func TestAgenticWorkflow_AnthropicCaching(t *testing.T) {
+	t.Parallel()
+	c := dialTemporal(t)
+
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("ANTHROPIC_API_KEY not set, skipping Anthropic caching E2E test")
+	}
+
+	workflowID := "test-anthropic-caching-" + uuid.New().String()[:8]
+	input := workflow.WorkflowInput{
+		ConversationID: workflowID,
+		UserMessage:    "Say exactly the word: lychee",
+		Config: models.SessionConfiguration{
+			Model: models.ModelConfig{
+				Provider:      "anthropic",
+				Model:         "claude-haiku-4-5-20251001",
+				Temperature:   0,
+				MaxTokens:     32,
+				ContextWindow: 200000,
+			},
+			Tools: models.ToolsConfig{
+				EnabledTools: []string{"request_user_input"},
+			},
+			DisableSuggestions: true,
+		},
+	}
+
+	t.Logf("Starting Anthropic caching workflow: %s", workflowID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	startWorkflow(t, ctx, c, input)
+
+	// Turn 1: first LLM call writes the system prompt to Anthropic's cache.
+	waitForTurnComplete(t, ctx, c, workflowID, 1)
+	t.Log("Turn 1 complete (cache write expected)")
+
+	// Turn 2: identical system prompt → Anthropic should serve it from cache.
+	updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   workflowID,
+		UpdateName:   workflow.UpdateUserInput,
+		Args:         []interface{}{workflow.UserInput{Content: "Now say exactly: durian"}},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	require.NoError(t, err, "Failed to send second user input")
+	var accepted workflow.UserInputAccepted
+	require.NoError(t, updateHandle.Get(ctx, &accepted))
+	t.Logf("Turn 2 sent, turn ID: %s", accepted.TurnID)
+
+	waitForTurnComplete(t, ctx, c, workflowID, 2)
+	t.Log("Turn 2 complete (cache read expected)")
+
+	// Query TurnStatus — TotalCachedTokens must be > 0 after the second turn.
+	statusResp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryGetTurnStatus)
+	require.NoError(t, err, "Failed to query turn status")
+	var status workflow.TurnStatus
+	require.NoError(t, statusResp.Get(&status))
+
+	t.Logf("TurnStatus — total tokens: %d, cached tokens: %d",
+		status.TotalTokens, status.TotalCachedTokens)
+	assert.Greater(t, status.TotalCachedTokens, 0,
+		"TotalCachedTokens must be > 0 after turn 2: Anthropic should have served "+
+			"the system prompt from cache (cache_read_input_tokens > 0)")
+
+	// Shutdown and verify the result carries the same cached token count.
+	result := shutdownWorkflow(t, ctx, c, workflowID)
+	assert.Greater(t, result.TotalCachedTokens, 0,
+		"WorkflowResult.TotalCachedTokens must be > 0")
+	assert.Equal(t, "shutdown", result.EndReason)
+
+	t.Logf("Anthropic caching — total: %d tokens, cached: %d tokens (%d%%)",
+		result.TotalTokens, result.TotalCachedTokens,
+		result.TotalCachedTokens*100/max(result.TotalTokens, 1))
+}
+
 // TestAgenticWorkflow_ProactiveCompaction verifies that proactive context compaction
 // fires when the conversation history exceeds AutoCompactTokenLimit. Uses a prompt
 // that generates a long response to build up history, then a very low token limit
