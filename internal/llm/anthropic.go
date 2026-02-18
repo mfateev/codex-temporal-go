@@ -70,10 +70,11 @@ func (c *AnthropicClient) Call(ctx context.Context, request LLMRequest) (LLMResp
 		Items:        items,
 		FinishReason: finishReason,
 		TokenUsage: models.TokenUsage{
-			PromptTokens:     int(response.Usage.InputTokens),
-			CompletionTokens: int(response.Usage.OutputTokens),
-			TotalTokens:      int(response.Usage.InputTokens + response.Usage.OutputTokens),
-			CachedTokens:     int(response.Usage.CacheReadInputTokens),
+			PromptTokens:        int(response.Usage.InputTokens),
+			CompletionTokens:    int(response.Usage.OutputTokens),
+			TotalTokens:         int(response.Usage.InputTokens + response.Usage.OutputTokens),
+			CachedTokens:        int(response.Usage.CacheReadInputTokens),
+			CacheCreationTokens: int(response.Usage.CacheCreationInputTokens),
 		},
 	}, nil
 }
@@ -112,20 +113,16 @@ func (c *AnthropicClient) buildSystemBlocks(request LLMRequest) []anthropic.Text
 	// Base instructions (system prompt) - cacheable
 	if request.BaseInstructions != "" {
 		blocks = append(blocks, anthropic.TextBlockParam{
-			Text: request.BaseInstructions,
-			CacheControl: anthropic.CacheControlEphemeralParam{
-				TTL: anthropic.CacheControlEphemeralTTLTTL5m,
-			},
+			Text:         request.BaseInstructions,
+			CacheControl: anthropic.NewCacheControlEphemeralParam(),
 		})
 	}
 
 	// User instructions - also cacheable
 	if request.UserInstructions != "" {
 		blocks = append(blocks, anthropic.TextBlockParam{
-			Text: request.UserInstructions,
-			CacheControl: anthropic.CacheControlEphemeralParam{
-				TTL: anthropic.CacheControlEphemeralTTLTTL5m,
-			},
+			Text:         request.UserInstructions,
+			CacheControl: anthropic.NewCacheControlEphemeralParam(),
 		})
 	}
 
@@ -159,6 +156,18 @@ func (c *AnthropicClient) buildMessages(request LLMRequest) ([]anthropic.Message
 		return nil, err
 	}
 	messages = append(messages, historyMessages...)
+
+	// Add cache breakpoint to the last content block of the penultimate message.
+	// This caches all conversation history before the current user turn, so
+	// repeated turns in a long session skip re-processing prior context.
+	if len(messages) >= 2 {
+		penultimate := &messages[len(messages)-2]
+		if len(penultimate.Content) > 0 {
+			if cc := penultimate.Content[len(penultimate.Content)-1].GetCacheControl(); cc != nil {
+				*cc = anthropic.NewCacheControlEphemeralParam()
+			}
+		}
+	}
 
 	return messages, nil
 }
@@ -331,6 +340,14 @@ func (c *AnthropicClient) buildToolDefinitions(specs []tools.ToolSpec) []anthrop
 				InputSchema: inputSchema,
 			},
 		})
+	}
+
+	// Add cache breakpoint on the last tool definition to cache all tool specs.
+	// This avoids re-processing the tool list on every turn within a session.
+	if len(toolDefs) > 0 {
+		if last := toolDefs[len(toolDefs)-1].OfTool; last != nil {
+			last.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		}
 	}
 
 	return toolDefs
