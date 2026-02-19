@@ -131,3 +131,13 @@ type ModelsFetchedMsg struct {
 type SuggestionPollMsg struct {
 	Suggestion string
 }
+
+// ManagerSessionsMsg is returned when the manager's session list is fetched successfully.
+type ManagerSessionsMsg struct {
+	Sessions []workflow.SessionEntry
+}
+
+// ManagerSessionsErrorMsg is returned when fetching manager sessions fails.
+type ManagerSessionsErrorMsg struct {
+	Err error
+}

@@ -17,11 +17,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/mfateev/temporal-agent-harness/internal/cli"
-	"github.com/mfateev/temporal-agent-harness/internal/instructions"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
 )
 
@@ -78,27 +76,6 @@ func main() {
 		}
 	}
 
-	// Load CLI-side project docs (AGENTS.md from current project)
-	cwd, _ := os.Getwd()
-	var cliProjectDocs string
-	if gitRoot, err := instructions.FindGitRoot(cwd); err == nil && gitRoot != "" {
-		cliProjectDocs, _ = instructions.LoadProjectDocs(gitRoot, cwd, nil)
-	}
-
-	// Load user personal instructions (~/.codex/instructions.md)
-	var userPersonalInstructions string
-	configDir := *codexHome
-	if configDir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			configDir = filepath.Join(home, ".codex")
-		}
-	}
-	if configDir != "" {
-		if data, err := os.ReadFile(filepath.Join(configDir, "instructions.md")); err == nil {
-			userPersonalInstructions = string(data)
-		}
-	}
-
 	// Smart provider detection from model name
 	resolvedProvider := *provider
 	if resolvedProvider == "" {
@@ -106,22 +83,20 @@ func main() {
 	}
 
 	config := cli.Config{
-		TemporalHost:             *temporalHost,
-		Session:                  sess,
-		Message:                  msg,
-		Model:                    *model,
-		NoMarkdown:               *noMarkdown,
-		NoColor:                  *noColor,
-		ApprovalMode:             resolvedApproval,
-		SandboxMode:              *sandboxMode,
-		SandboxWritableRoots:     writableRoots,
-		SandboxNetworkAccess:     *sandboxNetwork,
-		CodexHome:                configDir,
-		CLIProjectDocs:           cliProjectDocs,
-		UserPersonalInstructions: userPersonalInstructions,
-		Provider:                 resolvedProvider,
-		Inline:                   *inline,
-		DisableSuggestions:       *noSuggestions,
+		TemporalHost:         *temporalHost,
+		Session:              sess,
+		Message:              msg,
+		Model:                *model,
+		NoMarkdown:           *noMarkdown,
+		NoColor:              *noColor,
+		ApprovalMode:         resolvedApproval,
+		SandboxMode:          *sandboxMode,
+		SandboxWritableRoots: writableRoots,
+		SandboxNetworkAccess: *sandboxNetwork,
+		CodexHome:            *codexHome,
+		Provider:             resolvedProvider,
+		Inline:               *inline,
+		DisableSuggestions:   *noSuggestions,
 	}
 
 	if err := cli.Run(config); err != nil {

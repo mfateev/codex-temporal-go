@@ -55,6 +55,8 @@ func main() {
 	// Register workflows
 	w.RegisterWorkflow(workflow.AgenticWorkflow)
 	w.RegisterWorkflow(workflow.AgenticWorkflowContinued)
+	w.RegisterWorkflow(workflow.ManagerWorkflow)
+	w.RegisterWorkflow(workflow.ManagerWorkflowContinued)
 
 	// Create tool registry with handlers
 	// Maps to: codex-rs/core/src/tools/registry.rs ToolRegistry setup
@@ -88,6 +90,7 @@ func main() {
 
 	instructionActivities := activities.NewInstructionActivities()
 	w.RegisterActivity(instructionActivities.LoadWorkerInstructions)
+	w.RegisterActivity(instructionActivities.LoadPersonalInstructions)
 	w.RegisterActivity(instructionActivities.LoadExecPolicy)
 
 	// Start worker

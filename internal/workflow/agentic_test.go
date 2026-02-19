@@ -31,10 +31,6 @@ func ExecuteTool(_ context.Context, _ activities.ToolActivityInput) (activities.
 	panic("stub: should be mocked")
 }
 
-func LoadWorkerInstructions(_ context.Context, _ activities.LoadWorkerInstructionsInput) (activities.LoadWorkerInstructionsOutput, error) {
-	panic("stub: should be mocked")
-}
-
 // AgenticWorkflowTestSuite runs workflow tests with the Temporal test environment.
 type AgenticWorkflowTestSuite struct {
 	suite.Suite
@@ -44,10 +40,6 @@ type AgenticWorkflowTestSuite struct {
 
 func TestAgenticWorkflowSuite(t *testing.T) {
 	suite.Run(t, new(AgenticWorkflowTestSuite))
-}
-
-func LoadExecPolicy(_ context.Context, _ activities.LoadExecPolicyInput) (activities.LoadExecPolicyOutput, error) {
-	panic("stub: should be mocked")
 }
 
 func ExecuteCompact(_ context.Context, _ activities.CompactActivityInput) (activities.CompactActivityOutput, error) {
@@ -62,19 +54,8 @@ func (s *AgenticWorkflowTestSuite) SetupTest() {
 	s.env = s.NewTestWorkflowEnvironment()
 	s.env.RegisterActivity(ExecuteLLMCall)
 	s.env.RegisterActivity(ExecuteTool)
-	s.env.RegisterActivity(LoadWorkerInstructions)
-	s.env.RegisterActivity(LoadExecPolicy)
 	s.env.RegisterActivity(ExecuteCompact)
 	s.env.RegisterActivity(GenerateSuggestions)
-
-	// Default mock for LoadWorkerInstructions — returns empty docs.
-	// Tests that need specific worker docs can override this.
-	s.env.OnActivity("LoadWorkerInstructions", mock.Anything, mock.Anything).
-		Return(activities.LoadWorkerInstructionsOutput{}, nil).Maybe()
-
-	// Default mock for LoadExecPolicy — returns empty rules.
-	s.env.OnActivity("LoadExecPolicy", mock.Anything, mock.Anything).
-		Return(activities.LoadExecPolicyOutput{}, nil).Maybe()
 
 	// Default mock for ExecuteCompact — returns failure to trigger fallback.
 	// Tests that need compaction to succeed should override this.
@@ -109,6 +90,10 @@ func testInput(message string) WorkflowInput {
 		ConversationID: "test-conv-1",
 		UserMessage:    message,
 		Config: models.SessionConfiguration{
+			// Non-empty BaseInstructions signals that config is pre-assembled,
+			// preventing AgenticWorkflow from calling resolveInstructions (which
+			// would require LoadWorkerInstructions to be mocked in every test).
+			BaseInstructions: "test base instructions",
 			Model: models.ModelConfig{
 				Model:         "gpt-4o-mini",
 				Temperature:   0,

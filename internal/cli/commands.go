@@ -2,12 +2,13 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
+	enums "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 
 	"github.com/mfateev/temporal-agent-harness/internal/llm"
@@ -15,53 +16,69 @@ import (
 	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
-// startWorkflowCmd starts a new workflow and returns WorkflowStartedMsg.
+// managerWorkflowID returns a stable manager workflow ID derived from the
+// working directory path.
+func managerWorkflowID(cwd string) string {
+	h := sha256.New()
+	h.Write([]byte(cwd))
+	return fmt.Sprintf("manager-%x", h.Sum(nil)[:8])
+}
+
+// startWorkflowCmd starts (or re-attaches to) a ManagerWorkflow and sends a
+// start_session Update to obtain a child AgenticWorkflow ID. It returns
+// WorkflowStartedMsg with the child session workflow ID so all subsequent TUI
+// operations target the AgenticWorkflow directly.
 func startWorkflowCmd(c client.Client, config Config) tea.Cmd {
 	return func() tea.Msg {
-		workflowID := fmt.Sprintf("codex-%s", uuid.New().String()[:8])
-
 		cwd := config.Cwd
 		if cwd == "" {
 			cwd, _ = os.Getwd()
 		}
 
-		input := workflow.WorkflowInput{
-			ConversationID: workflowID,
-			UserMessage:    config.Message,
-			Config: models.SessionConfiguration{
-				Model: models.ModelConfig{
-					Provider:      config.Provider,
-					Model:         config.Model,
-					Temperature:   0.7,
-					MaxTokens:     4096,
-					ContextWindow: 128000,
-				},
-				Tools:                    models.DefaultToolsConfig(),
-				AutoCompactTokenLimit:    128000 * 4 / 5, // 80% of context window
-				ApprovalMode:             config.ApprovalMode,
-				CodexHome:                config.CodexHome,
-				SandboxMode:              config.SandboxMode,
-				SandboxWritableRoots:     config.SandboxWritableRoots,
-				SandboxNetworkAccess:     config.SandboxNetworkAccess,
-				DisableSuggestions:       config.DisableSuggestions,
-				Cwd:                      cwd,
-				SessionSource:            "interactive-cli",
-				CLIProjectDocs:           config.CLIProjectDocs,
-				UserPersonalInstructions: config.UserPersonalInstructions,
+		managerID := managerWorkflowID(cwd)
+
+		input := workflow.ManagerWorkflowInput{
+			ManagerID: managerID,
+			Overrides: workflow.CLIOverrides{
+				Provider:             config.Provider,
+				Model:                config.Model,
+				ApprovalMode:         config.ApprovalMode,
+				SandboxMode:          config.SandboxMode,
+				SandboxWritableRoots: config.SandboxWritableRoots,
+				SandboxNetworkAccess: config.SandboxNetworkAccess,
+				CodexHome:            config.CodexHome,
+				Cwd:                  cwd,
+				DisableSuggestions:   config.DisableSuggestions,
 			},
 		}
 
 		ctx := context.Background()
 		_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-			ID:        workflowID,
-			TaskQueue: TaskQueue,
-		}, "AgenticWorkflow", input)
+			ID:                    managerID,
+			TaskQueue:             TaskQueue,
+			WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+		}, "ManagerWorkflow", input)
 		if err != nil {
-			return WorkflowStartErrorMsg{Err: fmt.Errorf("failed to start workflow: %w", err)}
+			return WorkflowStartErrorMsg{Err: fmt.Errorf("failed to start manager workflow: %w", err)}
+		}
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID:   managerID,
+			UpdateName:   workflow.UpdateStartSession,
+			Args:         []interface{}{workflow.StartSessionRequest{UserMessage: config.Message}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return WorkflowStartErrorMsg{Err: fmt.Errorf("failed to send start_session update: %w", err)}
+		}
+
+		var resp workflow.StartSessionResponse
+		if err := updateHandle.Get(ctx, &resp); err != nil {
+			return WorkflowStartErrorMsg{Err: fmt.Errorf("start_session update failed: %w", err)}
 		}
 
 		return WorkflowStartedMsg{
-			WorkflowID: workflowID,
+			WorkflowID: resp.SessionWorkflowID,
 			IsResume:   false,
 		}
 	}

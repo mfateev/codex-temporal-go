@@ -67,3 +67,35 @@ func TestLoadWorkerInstructions_Subdirectory(t *testing.T) {
 	assert.Contains(t, result.ProjectDocs, "sub docs")
 	assert.Equal(t, dir, result.GitRoot)
 }
+
+func TestLoadPersonalInstructions_FileExists(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "instructions.md"), []byte("personal instructions content"), 0o644))
+
+	a := NewInstructionActivities()
+	result, err := a.LoadPersonalInstructions(context.Background(), LoadPersonalInstructionsInput{
+		CodexHome: dir,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "personal instructions content", result.Instructions)
+}
+
+func TestLoadPersonalInstructions_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+
+	a := NewInstructionActivities()
+	result, err := a.LoadPersonalInstructions(context.Background(), LoadPersonalInstructionsInput{
+		CodexHome: dir,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Instructions)
+}
+
+func TestLoadPersonalInstructions_EmptyCodexHome(t *testing.T) {
+	a := NewInstructionActivities()
+	result, err := a.LoadPersonalInstructions(context.Background(), LoadPersonalInstructionsInput{
+		CodexHome: "",
+	})
+	require.NoError(t, err)
+	_ = result // Instructions may or may not be set depending on the environment
+}

@@ -108,10 +108,6 @@ type Config struct {
 	// Codex config
 	CodexHome string // Path to codex config directory (default: ~/.codex)
 
-	// Instruction sources (populated by CLI main)
-	CLIProjectDocs          string // AGENTS.md from CLI's local project
-	UserPersonalInstructions string // From ~/.codex/instructions.md
-
 	// TUI settings
 	Provider           string // LLM provider (openai, anthropic, google)
 	Inline             bool   // Disable alt-screen mode

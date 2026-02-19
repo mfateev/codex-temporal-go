@@ -44,11 +44,17 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 	// Build tool specs based on configuration and profile
 	state.ToolSpecs = buildToolSpecs(input.Config.Tools, state.ResolvedProfile)
 
-	// Resolve instructions (load worker-side AGENTS.md, merge all sources)
-	state.resolveInstructions(ctx)
+	// If BaseInstructions is empty, config was not pre-assembled by ManagerWorkflow
+	// (e.g. direct invocation from E2E tests or CLI). Load from the worker filesystem.
+	if state.Config.BaseInstructions == "" {
+		state.resolveInstructions(ctx)
+	}
 
-	// Load exec policy rules from worker filesystem
-	state.loadExecPolicy(ctx)
+	// Copy pre-loaded exec policy rules, or load from the worker if not provided.
+	state.ExecPolicyRules = input.Config.ExecPolicyRules
+	if state.ExecPolicyRules == "" {
+		state.loadExecPolicy(ctx)
+	}
 
 	// Generate initial turn ID
 	turnID := state.nextTurnID()
