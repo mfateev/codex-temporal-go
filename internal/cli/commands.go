@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/google/uuid"
+	enums "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
 	"github.com/mfateev/temporal-agent-harness/internal/llm"
@@ -15,53 +17,84 @@ import (
 	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
-// startWorkflowCmd starts a new workflow and returns WorkflowStartedMsg.
+// harnessWorkflowID returns a stable harness workflow ID derived from the
+// working directory path.
+func harnessWorkflowID(cwd string) string {
+	h := sha256.New()
+	h.Write([]byte(cwd))
+	return fmt.Sprintf("harness-%x", h.Sum(nil)[:8])
+}
+
+// startWorkflowCmd starts (or re-attaches to) a HarnessWorkflow and sends a
+// start_session Update to obtain a child AgenticWorkflow ID. It returns
+// WorkflowStartedMsg with the child session workflow ID so all subsequent TUI
+// operations target the AgenticWorkflow directly.
 func startWorkflowCmd(c client.Client, config Config) tea.Cmd {
 	return func() tea.Msg {
-		workflowID := fmt.Sprintf("codex-%s", uuid.New().String()[:8])
-
 		cwd := config.Cwd
 		if cwd == "" {
 			cwd, _ = os.Getwd()
 		}
 
-		input := workflow.WorkflowInput{
-			ConversationID: workflowID,
-			UserMessage:    config.Message,
-			Config: models.SessionConfiguration{
-				Model: models.ModelConfig{
-					Provider:      config.Provider,
-					Model:         config.Model,
-					Temperature:   0.7,
-					MaxTokens:     4096,
-					ContextWindow: 128000,
-				},
-				Tools:                    models.DefaultToolsConfig(),
-				AutoCompactTokenLimit:    128000 * 4 / 5, // 80% of context window
-				ApprovalMode:             config.ApprovalMode,
-				CodexHome:                config.CodexHome,
-				SandboxMode:              config.SandboxMode,
-				SandboxWritableRoots:     config.SandboxWritableRoots,
-				SandboxNetworkAccess:     config.SandboxNetworkAccess,
-				DisableSuggestions:       config.DisableSuggestions,
-				Cwd:                      cwd,
-				SessionSource:            "interactive-cli",
-				CLIProjectDocs:           config.CLIProjectDocs,
-				UserPersonalInstructions: config.UserPersonalInstructions,
+		harnessID := harnessWorkflowID(cwd)
+
+		input := workflow.HarnessWorkflowInput{
+			HarnessID: harnessID,
+			Overrides: workflow.CLIOverrides{
+				Provider:             config.Provider,
+				Model:                config.Model,
+				ApprovalMode:         config.ApprovalMode,
+				SandboxMode:          config.SandboxMode,
+				SandboxWritableRoots: config.SandboxWritableRoots,
+				SandboxNetworkAccess: config.SandboxNetworkAccess,
+				CodexHome:            config.CodexHome,
+				Cwd:                  cwd,
+				DisableSuggestions:   config.DisableSuggestions,
 			},
 		}
 
 		ctx := context.Background()
 		_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-			ID:        workflowID,
-			TaskQueue: TaskQueue,
-		}, "AgenticWorkflow", input)
+			ID:                    harnessID,
+			TaskQueue:             TaskQueue,
+			WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+		}, "HarnessWorkflow", input)
 		if err != nil {
-			return WorkflowStartErrorMsg{Err: fmt.Errorf("failed to start workflow: %w", err)}
+			return WorkflowStartErrorMsg{Err: fmt.Errorf("failed to start harness workflow: %w", err)}
+		}
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID: harnessID,
+			UpdateName: workflow.UpdateStartSession,
+			Args: []interface{}{workflow.StartSessionRequest{
+				UserMessage: config.Message,
+				// Pass per-invocation overrides so each session gets its own
+				// model/approval/sandbox config, even when multiple tcx processes
+				// share the same long-lived HarnessWorkflow.
+				OverrideConfig: &workflow.CLIOverrides{
+					Provider:             config.Provider,
+					Model:                config.Model,
+					ApprovalMode:         config.ApprovalMode,
+					SandboxMode:          config.SandboxMode,
+					SandboxWritableRoots: config.SandboxWritableRoots,
+					SandboxNetworkAccess: config.SandboxNetworkAccess,
+					DisableSuggestions:   config.DisableSuggestions,
+					Cwd:                  cwd,
+				},
+			}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return WorkflowStartErrorMsg{Err: fmt.Errorf("failed to send start_session update: %w", err)}
+		}
+
+		var resp workflow.StartSessionResponse
+		if err := updateHandle.Get(ctx, &resp); err != nil {
+			return WorkflowStartErrorMsg{Err: fmt.Errorf("start_session update failed: %w", err)}
 		}
 
 		return WorkflowStartedMsg{
-			WorkflowID: workflowID,
+			WorkflowID: resp.SessionWorkflowID,
 			IsResume:   false,
 		}
 	}
@@ -367,6 +400,66 @@ func fetchModelsCmd() tea.Cmd {
 			})
 		}
 		return ModelsFetchedMsg{Models: opts}
+	}
+}
+
+// fetchSessionsCmd lists recent AgenticWorkflow executions belonging to this
+// harness via the Temporal visibility API and returns a HarnessSessionsListMsg.
+//
+// TODO: Add a custom search attribute (e.g. "HarnessID") so sessions can be
+// filtered by workspace without relying on WorkflowId prefix syntax.
+// This would also allow filtering sessions belonging to the current user
+// across workspaces (multi-user/multi-tenant scenarios).
+func fetchSessionsCmd(c client.Client, harnessID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		query := fmt.Sprintf(
+			`WorkflowType = 'AgenticWorkflow' AND WorkflowId STARTS_WITH '%s/' AND ExecutionStatus = 'Running'`,
+			harnessID,
+		)
+		resp, err := c.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
+			Query:    query,
+			PageSize: 10,
+		})
+		if err != nil {
+			return HarnessSessionsListMsg{Err: err}
+		}
+
+		var entries []SessionListEntry
+		for _, exec := range resp.GetExecutions() {
+			if exec.GetExecution() == nil {
+				continue
+			}
+			entries = append(entries, SessionListEntry{
+				WorkflowID: exec.GetExecution().GetWorkflowId(),
+				StartTime:  exec.GetStartTime().AsTime(),
+				Status:     mapWorkflowStatus(exec.GetStatus()),
+			})
+		}
+		return HarnessSessionsListMsg{Entries: entries}
+	}
+}
+
+// mapWorkflowStatus converts a Temporal WorkflowExecutionStatus enum to a
+// human-readable string for display in the session picker.
+func mapWorkflowStatus(status enums.WorkflowExecutionStatus) string {
+	switch status {
+	case enums.WORKFLOW_EXECUTION_STATUS_RUNNING:
+		return "running"
+	case enums.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+		return "completed"
+	case enums.WORKFLOW_EXECUTION_STATUS_FAILED:
+		return "failed"
+	case enums.WORKFLOW_EXECUTION_STATUS_CANCELED:
+		return "canceled"
+	case enums.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+		return "timed_out"
+	case enums.WORKFLOW_EXECUTION_STATUS_TERMINATED:
+		return "terminated"
+	default:
+		return "unknown"
 	}
 }
 

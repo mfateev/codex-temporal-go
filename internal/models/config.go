@@ -129,6 +129,13 @@ type SessionConfiguration struct {
 	// Default: ~/.codex
 	CodexHome string `json:"codex_home,omitempty"`
 
+	// ExecPolicyRules contains the pre-loaded exec policy rules source
+	// (from ~/.codex/rules/*.rules). Set by HarnessWorkflow so that
+	// AgenticWorkflow can apply exec policy without re-running the
+	// LoadExecPolicy activity.
+	// Empty string means no rules loaded.
+	ExecPolicyRules string `json:"exec_policy_rules,omitempty"`
+
 	// Sandbox configuration
 	SandboxMode          string   `json:"sandbox_mode,omitempty"`           // "full-access", "read-only", "workspace-write"
 	SandboxWritableRoots []string `json:"sandbox_writable_roots,omitempty"` // Directories writable in workspace-write mode

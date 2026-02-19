@@ -1,7 +1,8 @@
 // Package workflow contains Temporal workflow definitions.
 //
-// init.go handles one-time session initialization: resolving instructions
-// and loading exec policy rules from the worker filesystem.
+// init.go handles one-time session initialization: resolving the model profile,
+// and (when config is not pre-assembled) loading instructions and exec policy
+// from the worker filesystem.
 package workflow
 
 import (
@@ -17,7 +18,7 @@ import (
 
 // resolveProfile resolves the model profile from the registry.
 // Pure computation — no activity needed. Must be called before
-// resolveInstructions and buildToolSpecs.
+// buildToolSpecs.
 func (s *SessionState) resolveProfile() {
 	registry := models.NewDefaultRegistry()
 	s.ResolvedProfile = registry.Resolve(s.Config.Model.Provider, s.Config.Model.Model)
@@ -35,8 +36,9 @@ func (s *SessionState) resolveProfile() {
 }
 
 // resolveInstructions loads worker-side AGENTS.md files and merges all
-// instruction sources into the session configuration. Called once before
-// the first turn. Non-fatal: falls back to CLI-provided docs on failure.
+// instruction sources into the session configuration. Called when
+// BaseInstructions is empty (i.e. AgenticWorkflow was not started via
+// HarnessWorkflow). Non-fatal: falls back gracefully on activity failure.
 func (s *SessionState) resolveInstructions(ctx workflow.Context) {
 	logger := workflow.GetLogger(ctx)
 
@@ -61,20 +63,17 @@ func (s *SessionState) resolveInstructions(ctx workflow.Context) {
 	var loadResult activities.LoadWorkerInstructionsOutput
 	err := workflow.ExecuteActivity(loadCtx, "LoadWorkerInstructions", loadInput).Get(ctx, &loadResult)
 	if err != nil {
-		logger.Warn("Failed to load worker instructions, using CLI fallback", "error", err)
+		logger.Warn("Failed to load worker instructions, using defaults", "error", err)
 	} else {
 		workerDocs = loadResult.ProjectDocs
 	}
 
 	// Merge all instruction sources, including profile's PromptSuffix
 	merged := instructions.MergeInstructions(instructions.MergeInput{
-		BaseOverride:             s.Config.BaseInstructions,
-		PromptSuffix:             s.ResolvedProfile.PromptSuffix,
-		CLIProjectDocs:           s.Config.CLIProjectDocs,
-		WorkerProjectDocs:        workerDocs,
-		UserPersonalInstructions: s.Config.UserPersonalInstructions,
-		ApprovalMode:             string(s.Config.ApprovalMode),
-		Cwd:                      s.Config.Cwd,
+		PromptSuffix:      s.ResolvedProfile.PromptSuffix,
+		WorkerProjectDocs: workerDocs,
+		ApprovalMode:      string(s.Config.ApprovalMode),
+		Cwd:               s.Config.Cwd,
 	})
 
 	// Store merged results in config (persists through ContinueAsNew)
@@ -89,6 +88,7 @@ func (s *SessionState) resolveInstructions(ctx workflow.Context) {
 }
 
 // loadExecPolicy loads exec policy rules from the worker filesystem.
+// Called when ExecPolicyRules is empty (i.e. not pre-loaded by HarnessWorkflow).
 // Non-fatal: falls back to empty policy on failure.
 func (s *SessionState) loadExecPolicy(ctx workflow.Context) {
 	logger := workflow.GetLogger(ctx)

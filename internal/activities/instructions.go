@@ -106,3 +106,41 @@ func (a *InstructionActivities) LoadExecPolicy(
 		RulesSource: strings.Join(parts, "\n"),
 	}, nil
 }
+
+// LoadPersonalInstructionsInput is the input for the LoadPersonalInstructions activity.
+type LoadPersonalInstructionsInput struct {
+	// CodexHome is the path to the codex config directory (default: ~/.codex).
+	// If empty, the activity resolves it via os.UserHomeDir().
+	CodexHome string `json:"codex_home,omitempty"`
+}
+
+// LoadPersonalInstructionsOutput is the result of the LoadPersonalInstructions activity.
+type LoadPersonalInstructionsOutput struct {
+	// Instructions contains the content of ~/.codex/instructions.md.
+	// Empty if the file does not exist (non-fatal).
+	Instructions string `json:"instructions,omitempty"`
+}
+
+// LoadPersonalInstructions reads ~/.codex/instructions.md from the worker's
+// filesystem. Non-fatal: returns empty output (no error) if the file is
+// missing or any I/O error occurs.
+//
+// This activity is called by HarnessWorkflow so that personal instructions
+// are loaded from the worker filesystem rather than the TUI client.
+func (a *InstructionActivities) LoadPersonalInstructions(
+	_ context.Context, input LoadPersonalInstructionsInput,
+) (LoadPersonalInstructionsOutput, error) {
+	configDir := input.CodexHome
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return LoadPersonalInstructionsOutput{}, nil
+		}
+		configDir = filepath.Join(home, ".codex")
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "instructions.md"))
+	if err != nil {
+		return LoadPersonalInstructionsOutput{}, nil
+	}
+	return LoadPersonalInstructionsOutput{Instructions: string(data)}, nil
+}
