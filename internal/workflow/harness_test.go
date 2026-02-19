@@ -17,7 +17,7 @@ import (
 	"github.com/mfateev/temporal-agent-harness/internal/activities"
 )
 
-// Stub activity functions for the manager test environment.
+// Stub activity functions for the harness test environment.
 // These are never called directly — OnActivity mocks override them —
 // but they must be registered so the test env recognises the activity names.
 // The function names must match the string names used in workflow.ExecuteActivity calls.
@@ -75,15 +75,15 @@ func (s *HarnessWorkflowTestSuite) AfterTest(suiteName, testName string) {
 	s.env.AssertExpectations(s.T())
 }
 
-// managerInput returns a standard HarnessWorkflowInput for testing.
-func managerInput() HarnessWorkflowInput {
+// harnessInput returns a standard HarnessWorkflowInput for testing.
+func harnessInput() HarnessWorkflowInput {
 	return HarnessWorkflowInput{
-		ManagerID: "test-manager",
+		HarnessID: "test-harness",
 	}
 }
 
 // cancelWorkflow cancels the workflow via a delayed callback to terminate the
-// manager's infinite loop. The manager loops until either cancelled or a
+// harness's infinite loop. The harness loops until either cancelled or a
 // ContinueAsNew timeout fires; cancellation is the simplest way to stop it
 // in tests.
 func (s *HarnessWorkflowTestSuite) cancelWorkflow(delay time.Duration) {
@@ -93,16 +93,16 @@ func (s *HarnessWorkflowTestSuite) cancelWorkflow(delay time.Duration) {
 }
 
 // assertWorkflowCompleted verifies the workflow completed (regardless of reason).
-// The manager's infinite loop may complete via cancellation or idle timeout.
+// The harness's infinite loop may complete via cancellation or idle timeout.
 func (s *HarnessWorkflowTestSuite) assertWorkflowCompleted() {
 	require.True(s.T(), s.env.IsWorkflowCompleted(),
-		"manager workflow should have completed")
+		"harness workflow should have completed")
 }
 
-// TestManager_StartSessionSpawnsChild verifies that sending a start_session
+// TestHarness_StartSessionSpawnsChild verifies that sending a start_session
 // Update spawns a child workflow and returns a non-empty SessionWorkflowID.
 // It also queries get_sessions to confirm the session is recorded.
-func (s *HarnessWorkflowTestSuite) TestManager_StartSessionSpawnsChild() {
+func (s *HarnessWorkflowTestSuite) TestHarness_StartSessionSpawnsChild() {
 	var sessionWorkflowID string
 
 	// After activities resolve (~1s), send a start_session Update.
@@ -142,17 +142,17 @@ func (s *HarnessWorkflowTestSuite) TestManager_StartSessionSpawnsChild() {
 			"session status should be running or completed")
 	}, time.Second*2)
 
-	// Cancel the workflow to terminate the manager's idle loop.
+	// Cancel the workflow to terminate the harness's idle loop.
 	s.cancelWorkflow(time.Second * 3)
 
-	s.env.ExecuteWorkflow(HarnessWorkflow, managerInput())
+	s.env.ExecuteWorkflow(HarnessWorkflow, harnessInput())
 
 	s.assertWorkflowCompleted()
 }
 
-// TestManager_QuerySessionsEmpty verifies that querying get_sessions before
+// TestHarness_QuerySessionsEmpty verifies that querying get_sessions before
 // any sessions are started returns an empty (non-nil) slice.
-func (s *HarnessWorkflowTestSuite) TestManager_QuerySessionsEmpty() {
+func (s *HarnessWorkflowTestSuite) TestHarness_QuerySessionsEmpty() {
 	s.env.RegisterDelayedCallback(func() {
 		result, err := s.env.QueryWorkflow(QueryGetSessions)
 		require.NoError(s.T(), err)
@@ -165,17 +165,17 @@ func (s *HarnessWorkflowTestSuite) TestManager_QuerySessionsEmpty() {
 		assert.Empty(s.T(), sessions, "sessions should be empty before any start_session")
 	}, time.Second*1)
 
-	// Cancel the workflow to terminate the manager's idle loop.
+	// Cancel the workflow to terminate the harness's idle loop.
 	s.cancelWorkflow(time.Second * 2)
 
-	s.env.ExecuteWorkflow(HarnessWorkflow, managerInput())
+	s.env.ExecuteWorkflow(HarnessWorkflow, harnessInput())
 
 	s.assertWorkflowCompleted()
 }
 
-// TestManager_StartSession_EmptyMessageRejected verifies that the validator
+// TestHarness_StartSession_EmptyMessageRejected verifies that the validator
 // rejects a start_session Update with an empty UserMessage.
-func (s *HarnessWorkflowTestSuite) TestManager_StartSession_EmptyMessageRejected() {
+func (s *HarnessWorkflowTestSuite) TestHarness_StartSession_EmptyMessageRejected() {
 	var rejected bool
 
 	s.env.RegisterDelayedCallback(func() {
@@ -193,30 +193,30 @@ func (s *HarnessWorkflowTestSuite) TestManager_StartSession_EmptyMessageRejected
 		}, StartSessionRequest{UserMessage: ""})
 	}, time.Second*1)
 
-	// Cancel the workflow to terminate the manager's idle loop.
+	// Cancel the workflow to terminate the harness's idle loop.
 	s.cancelWorkflow(time.Second * 2)
 
-	s.env.ExecuteWorkflow(HarnessWorkflow, managerInput())
+	s.env.ExecuteWorkflow(HarnessWorkflow, harnessInput())
 
 	require.True(s.T(), s.env.IsWorkflowCompleted())
 	assert.True(s.T(), rejected, "empty user_message Update should have been rejected")
 }
 
-// TestManager_ActivityCallsOnStart verifies that all three config-loading
-// activities are called exactly once when the manager starts.
+// TestHarness_ActivityCallsOnStart verifies that all three config-loading
+// activities are called exactly once when the harness starts.
 // LoadExecPolicy is only called when CodexHome is non-empty; with default
 // (empty) overrides it is skipped entirely.
-func (s *HarnessWorkflowTestSuite) TestManager_ActivityCallsOnStart() {
+func (s *HarnessWorkflowTestSuite) TestHarness_ActivityCallsOnStart() {
 	// Track activity invocations by name using the started listener.
 	callCounts := map[string]int{}
 	s.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
 		callCounts[info.ActivityType.Name]++
 	})
 
-	// Cancel the workflow to terminate the manager's idle loop.
+	// Cancel the workflow to terminate the harness's idle loop.
 	s.cancelWorkflow(time.Second * 2)
 
-	s.env.ExecuteWorkflow(HarnessWorkflow, managerInput())
+	s.env.ExecuteWorkflow(HarnessWorkflow, harnessInput())
 
 	require.True(s.T(), s.env.IsWorkflowCompleted())
 

@@ -16,12 +16,12 @@ import (
 	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
-// managerWorkflowID returns a stable manager workflow ID derived from the
+// harnessWorkflowID returns a stable harness workflow ID derived from the
 // working directory path.
-func managerWorkflowID(cwd string) string {
+func harnessWorkflowID(cwd string) string {
 	h := sha256.New()
 	h.Write([]byte(cwd))
-	return fmt.Sprintf("manager-%x", h.Sum(nil)[:8])
+	return fmt.Sprintf("harness-%x", h.Sum(nil)[:8])
 }
 
 // startWorkflowCmd starts (or re-attaches to) a HarnessWorkflow and sends a
@@ -35,10 +35,10 @@ func startWorkflowCmd(c client.Client, config Config) tea.Cmd {
 			cwd, _ = os.Getwd()
 		}
 
-		managerID := managerWorkflowID(cwd)
+		harnessID := harnessWorkflowID(cwd)
 
 		input := workflow.HarnessWorkflowInput{
-			ManagerID: managerID,
+			HarnessID: harnessID,
 			Overrides: workflow.CLIOverrides{
 				Provider:             config.Provider,
 				Model:                config.Model,
@@ -54,16 +54,16 @@ func startWorkflowCmd(c client.Client, config Config) tea.Cmd {
 
 		ctx := context.Background()
 		_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
-			ID:                    managerID,
+			ID:                    harnessID,
 			TaskQueue:             TaskQueue,
 			WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 		}, "HarnessWorkflow", input)
 		if err != nil {
-			return WorkflowStartErrorMsg{Err: fmt.Errorf("failed to start manager workflow: %w", err)}
+			return WorkflowStartErrorMsg{Err: fmt.Errorf("failed to start harness workflow: %w", err)}
 		}
 
 		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
-			WorkflowID:   managerID,
+			WorkflowID:   harnessID,
 			UpdateName:   workflow.UpdateStartSession,
 			Args:         []interface{}{workflow.StartSessionRequest{UserMessage: config.Message}},
 			WaitForStage: client.WorkflowUpdateStageCompleted,

@@ -132,12 +132,12 @@ type SuggestionPollMsg struct {
 	Suggestion string
 }
 
-// ManagerSessionsMsg is returned when the manager's session list is fetched successfully.
-type ManagerSessionsMsg struct {
+// HarnessSessionsMsg is returned when the harness's session list is fetched successfully.
+type HarnessSessionsMsg struct {
 	Sessions []workflow.SessionEntry
 }
 
-// ManagerSessionsErrorMsg is returned when fetching manager sessions fails.
-type ManagerSessionsErrorMsg struct {
+// HarnessSessionsErrorMsg is returned when fetching harness sessions fails.
+type HarnessSessionsErrorMsg struct {
 	Err error
 }
