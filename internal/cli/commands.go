@@ -18,8 +18,12 @@ import (
 )
 
 // harnessWorkflowID returns a stable harness workflow ID derived from the
-// working directory path.
+// working directory path. If TCX_HARNESS_ID is set, it is used directly
+// (enables tests to predict the workflow ID for monitoring).
 func harnessWorkflowID(cwd string) string {
+	if id := os.Getenv("TCX_HARNESS_ID"); id != "" {
+		return id
+	}
 	h := sha256.New()
 	h.Write([]byte(cwd))
 	return fmt.Sprintf("harness-%x", h.Sum(nil)[:8])

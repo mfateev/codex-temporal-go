@@ -111,6 +111,11 @@ type Config struct {
 	Provider           string // LLM provider (openai, anthropic, google)
 	Inline             bool   // Disable alt-screen mode
 	DisableSuggestions bool   // Disable prompt suggestions
+
+	// ConnectionTimeout limits how long each Temporal RPC waits before giving up.
+	// 0 means no per-call timeout (default for interactive use).
+	// Short values (e.g. 10s) make tests fail fast when the server is dead.
+	ConnectionTimeout time.Duration
 }
 
 // Model is the bubbletea model for the interactive CLI.
@@ -1652,6 +1657,9 @@ func (m *Model) startWatching() tea.Cmd {
 	watchCtx, m.watchCancel = context.WithCancel(context.Background())
 
 	watcher := NewWatcher(m.client, m.workflowID)
+	if m.config.ConnectionTimeout > 0 {
+		watcher.WithRPCTimeout(m.config.ConnectionTimeout)
+	}
 	go watcher.RunWatching(watchCtx, m.watchCh, m.lastRenderedSeq, m.lastPhase)
 
 	return m.waitForWatchResult()
