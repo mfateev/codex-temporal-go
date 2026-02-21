@@ -8,12 +8,12 @@ import { tcxBinary, baseArgs, EXPECT_TIMEOUT, selectNewSession } from "./helpers
 // minimum cacheable block size for Claude Haiku 3.5. After turn 1 the API
 // writes the system prompt to its cache; turn 2 reads from it.
 //
-// Uses claude-3.5-haiku-20241022 (2 048-token minimum) rather than Haiku 4.5
-// (4 096-token minimum) because the base system prompt is ~2 700 tokens.
+// Uses claude-sonnet-4.5-20250929 (1 024-token cache minimum) because the base
+// system prompt is ~2 700 tokens.
 //
 // Requires: ANTHROPIC_API_KEY set in the environment.
 
-const anthropicModel = "claude-3.5-haiku-20241022";
+const anthropicModel = "claude-sonnet-4.5-20250929";
 
 test.use({
   program: {
