@@ -58,6 +58,12 @@ type CLIOverrides struct {
 
 	// DisableSuggestions disables prompt suggestions after turn completion.
 	DisableSuggestions bool `json:"disable_suggestions,omitempty"`
+
+	// MemoryEnabled enables the cross-session memory subsystem.
+	MemoryEnabled bool `json:"memory_enabled,omitempty"`
+
+	// MemoryDbPath overrides the default memory SQLite DB path.
+	MemoryDbPath string `json:"memory_db_path,omitempty"`
 }
 
 // HarnessWorkflowInput is the initial input for HarnessWorkflow.
@@ -387,6 +393,12 @@ func applyOverrides(cfg *models.SessionConfiguration, o *CLIOverrides) {
 	}
 	if o.DisableSuggestions {
 		cfg.DisableSuggestions = o.DisableSuggestions
+	}
+	if o.MemoryEnabled {
+		cfg.MemoryEnabled = o.MemoryEnabled
+	}
+	if o.MemoryDbPath != "" {
+		cfg.MemoryDbPath = o.MemoryDbPath
 	}
 }
 

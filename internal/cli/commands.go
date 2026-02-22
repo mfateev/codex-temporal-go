@@ -54,6 +54,8 @@ func startWorkflowCmd(c client.Client, config Config) tea.Cmd {
 				CodexHome:            config.CodexHome,
 				Cwd:                  cwd,
 				DisableSuggestions:   config.DisableSuggestions,
+				MemoryEnabled:        config.MemoryEnabled,
+				MemoryDbPath:         config.MemoryDbPath,
 			},
 		}
 
@@ -83,6 +85,8 @@ func startWorkflowCmd(c client.Client, config Config) tea.Cmd {
 					SandboxWritableRoots: config.SandboxWritableRoots,
 					SandboxNetworkAccess: config.SandboxNetworkAccess,
 					DisableSuggestions:   config.DisableSuggestions,
+					MemoryEnabled:        config.MemoryEnabled,
+					MemoryDbPath:         config.MemoryDbPath,
 					Cwd:                  cwd,
 				},
 			}},

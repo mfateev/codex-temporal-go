@@ -351,6 +351,10 @@ type SessionState struct {
 	// Persists across ContinueAsNew and is exposed via get_turn_status.
 	Plan *PlanState `json:"plan,omitempty"`
 
+	// MemoryExtractedAt is the epoch-seconds timestamp of the last memory
+	// extraction. Used to avoid re-extraction on ContinueAsNew resume.
+	MemoryExtractedAt int64 `json:"memory_extracted_at,omitempty"`
+
 	// Subagent control — manages child workflow lifecycles.
 	// Maps to: codex-rs/core/src/agent/control.rs AgentControl
 	AgentCtl *AgentControl `json:"agent_ctl,omitempty"`

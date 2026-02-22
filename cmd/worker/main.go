@@ -6,6 +6,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -14,6 +15,7 @@ import (
 	"github.com/mfateev/temporal-agent-harness/internal/execsession"
 	"github.com/mfateev/temporal-agent-harness/internal/llm"
 	"github.com/mfateev/temporal-agent-harness/internal/mcp"
+	"github.com/mfateev/temporal-agent-harness/internal/memories"
 	"github.com/mfateev/temporal-agent-harness/internal/temporalclient"
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
 	"github.com/mfateev/temporal-agent-harness/internal/tools/handlers"
@@ -101,6 +103,28 @@ func main() {
 	mcpActivities := activities.NewMcpActivities(mcpStore)
 	w.RegisterActivity(mcpActivities.InitializeMcpServers)
 	w.RegisterActivity(mcpActivities.CleanupMcpServers)
+
+	// Memory activities (SQLite DB opened lazily on first use)
+	home, _ := os.UserHomeDir()
+	dbPath := filepath.Join(home, ".codex", "state.sqlite")
+	memoryDB, err := memories.OpenMemoryDB(dbPath)
+	if err != nil {
+		log.Printf("Warning: failed to open memory DB at %s: %v (memory features disabled)", dbPath, err)
+	} else {
+		defer memoryDB.Close()
+	}
+
+	memoryActivities := activities.NewMemoryActivities(llmClient, memoryDB, c, toolRegistry)
+	w.RegisterActivity(memoryActivities.ExtractPhase1)
+	w.RegisterActivity(memoryActivities.UpsertStage1Output)
+	w.RegisterActivity(memoryActivities.ListStage1Outputs)
+	w.RegisterActivity(memoryActivities.MaterializeMemoryFiles)
+	w.RegisterActivity(memoryActivities.RunConsolidationAgent)
+	w.RegisterActivity(memoryActivities.ReadMemorySummary)
+	w.RegisterActivity(memoryActivities.SignalConsolidation)
+
+	// Register consolidation workflow
+	w.RegisterWorkflow(workflow.ConsolidationWorkflow)
 
 	// Start worker
 	log.Printf("Worker version: %s", version.GitCommit)

@@ -7,6 +7,7 @@ package workflow
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/mfateev/temporal-agent-harness/internal/activities"
 	"github.com/mfateev/temporal-agent-harness/internal/instructions"
+	"github.com/mfateev/temporal-agent-harness/internal/memories"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
 )
 
@@ -175,4 +177,176 @@ func (s *SessionState) initMcpServers(ctx workflow.Context) error {
 		"failures", len(initResult.Failures))
 
 	return nil
+}
+
+// memoryRoot returns the resolved memory folder root path.
+func (s *SessionState) memoryRoot() string {
+	if s.Config.MemoryRoot != "" {
+		return s.Config.MemoryRoot
+	}
+	codexHome := s.Config.CodexHome
+	if codexHome == "" {
+		codexHome = "~/.codex"
+	}
+	return filepath.Join(codexHome, "memories")
+}
+
+// memoryDbPath returns the resolved memory SQLite database path.
+func (s *SessionState) memoryDbPath() string {
+	if s.Config.MemoryDbPath != "" {
+		return s.Config.MemoryDbPath
+	}
+	codexHome := s.Config.CodexHome
+	if codexHome == "" {
+		codexHome = "~/.codex"
+	}
+	return filepath.Join(codexHome, "state.sqlite")
+}
+
+// loadMemorySummary reads the memory summary and injects it into the
+// developer instructions. Called at session start for root workflows.
+func (s *SessionState) loadMemorySummary(ctx workflow.Context) {
+	logger := workflow.GetLogger(ctx)
+
+	actOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 15 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 2,
+		},
+	}
+	if s.Config.SessionTaskQueue != "" {
+		actOpts.TaskQueue = s.Config.SessionTaskQueue
+	}
+	actCtx := workflow.WithActivityOptions(ctx, actOpts)
+
+	var result activities.ReadMemorySummaryOutput
+	err := workflow.ExecuteActivity(actCtx, "ReadMemorySummary",
+		activities.ReadMemorySummaryInput{
+			MemoryRoot: s.memoryRoot(),
+			MaxTokens:  memories.MemorySummaryMaxTokens,
+		},
+	).Get(ctx, &result)
+	if err != nil {
+		logger.Warn("Failed to read memory summary", "error", err)
+		return
+	}
+
+	if result.Summary == "" {
+		logger.Info("No memory summary found, skipping memory injection")
+		return
+	}
+
+	// Format and inject the memory section into developer instructions
+	memorySection := memories.ReadPathTemplate(s.memoryRoot(), result.Summary)
+	if s.Config.DeveloperInstructions != "" {
+		s.Config.DeveloperInstructions += "\n\n" + memorySection
+	} else {
+		s.Config.DeveloperInstructions = memorySection
+	}
+
+	logger.Info("Memory summary injected into developer instructions",
+		"summary_len", len(result.Summary))
+}
+
+// extractMemoryOnShutdown runs phase-1 memory extraction and signals the
+// consolidation workflow. Best-effort: errors are logged but don't fail
+// the shutdown.
+func (s *SessionState) extractMemoryOnShutdown(ctx workflow.Context) {
+	logger := workflow.GetLogger(ctx)
+
+	// Skip if already extracted (e.g. idle timeout followed by ContinueAsNew)
+	if s.MemoryExtractedAt > 0 {
+		return
+	}
+
+	items, _ := s.History.GetRawItems()
+	// Require at least 4 items for meaningful extraction
+	// (turn_started + env_context + user_message + assistant_message)
+	if len(items) < 4 {
+		logger.Info("Skipping memory extraction: insufficient history", "items", len(items))
+		return
+	}
+
+	actOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 90 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 2,
+		},
+	}
+	if s.Config.SessionTaskQueue != "" {
+		actOpts.TaskQueue = s.Config.SessionTaskQueue
+	}
+	actCtx := workflow.WithActivityOptions(ctx, actOpts)
+
+	// Determine the phase-1 model
+	modelConfig := s.Config.Model
+	if s.Config.MemoryConfig.Phase1Model != "" {
+		modelConfig.Model = s.Config.MemoryConfig.Phase1Model
+	}
+
+	// 1. Extract phase-1
+	var phase1Result activities.Phase1Output
+	err := workflow.ExecuteActivity(actCtx, "ExtractPhase1",
+		activities.Phase1Input{
+			History:     items,
+			Cwd:         s.Config.Cwd,
+			WorkflowID:  s.ConversationID,
+			ModelConfig: modelConfig,
+		},
+	).Get(ctx, &phase1Result)
+	if err != nil {
+		logger.Warn("Phase-1 memory extraction failed", "error", err)
+		return
+	}
+
+	if phase1Result.IsNoOp {
+		logger.Info("Phase-1 extraction returned no-op, skipping persist")
+		s.MemoryExtractedAt = workflow.Now(ctx).Unix()
+		return
+	}
+
+	// 2. Persist to SQLite
+	err = workflow.ExecuteActivity(actCtx, "UpsertStage1Output",
+		activities.UpsertStage1Input{
+			WorkflowID:      s.ConversationID,
+			RawMemory:       phase1Result.RawMemory,
+			RolloutSummary:  phase1Result.RolloutSummary,
+			RolloutSlug:     phase1Result.RolloutSlug,
+			Cwd:             s.Config.Cwd,
+			SourceUpdatedAt: workflow.Now(ctx).Unix(),
+		},
+	).Get(ctx, nil)
+	if err != nil {
+		logger.Warn("Failed to persist stage1 output", "error", err)
+		return
+	}
+
+	// 3. Signal consolidation workflow (best-effort)
+	consolidationModelConfig := s.Config.Model
+	if s.Config.MemoryConfig.Phase2Model != "" {
+		consolidationModelConfig.Model = s.Config.MemoryConfig.Phase2Model
+	}
+
+	maxRaw := s.Config.MemoryConfig.MaxRawMemoriesForGlobal
+	if maxRaw <= 0 {
+		maxRaw = 1024
+	}
+
+	err = workflow.ExecuteActivity(actCtx, "SignalConsolidation",
+		activities.SignalConsolidationInput{
+			SessionWorkflowID: s.ConversationID,
+			MemoryRoot:        s.memoryRoot(),
+			MemoryDbPath:      s.memoryDbPath(),
+			ModelConfig:       consolidationModelConfig,
+			MaxRawMemories:    maxRaw,
+		},
+	).Get(ctx, nil)
+	if err != nil {
+		logger.Warn("Failed to signal consolidation workflow", "error", err)
+		// Not fatal — extraction was still persisted
+	}
+
+	s.MemoryExtractedAt = workflow.Now(ctx).Unix()
+	logger.Info("Memory extraction completed and consolidation signaled",
+		"workflow_id", s.ConversationID)
 }

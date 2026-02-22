@@ -107,6 +107,10 @@ type Config struct {
 	// Codex config
 	CodexHome string // Path to codex config directory (default: ~/.codex)
 
+	// Memory subsystem
+	MemoryEnabled bool   // Enable cross-session memory
+	MemoryDbPath  string // Override memory SQLite DB path
+
 	// TUI settings
 	Provider           string // LLM provider (openai, anthropic, google)
 	Inline             bool   // Disable alt-screen mode
