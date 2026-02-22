@@ -39,6 +39,8 @@ func main() {
 	sandboxNetwork := flag.Bool("sandbox-network", true, "Allow network access in sandbox")
 	codexHome := flag.String("codex-home", "", "Path to codex config directory (default: ~/.codex)")
 	noSuggestions := flag.Bool("no-suggestions", false, "Disable prompt suggestions after turn completion")
+	memory := flag.Bool("memory", false, "Enable cross-session memory subsystem")
+	memoryDb := flag.String("memory-db", "", "Path to memory SQLite DB (default: ~/.codex/state.sqlite)")
 	connTimeout := flag.Duration("connection-timeout", 0, "Per-RPC timeout for Temporal calls (e.g. 10s). 0 = no timeout. Env: TCX_CONNECTION_TIMEOUT")
 	flag.Parse()
 
@@ -98,7 +100,9 @@ func main() {
 		Provider:             resolvedProvider,
 		Inline:               *inline,
 		DisableSuggestions:   *noSuggestions,
-		ConnectionTimeout:   *connTimeout,
+		MemoryEnabled:        *memory,
+		MemoryDbPath:         *memoryDb,
+		ConnectionTimeout:    *connTimeout,
 	}
 
 	if err := cli.Run(config); err != nil {

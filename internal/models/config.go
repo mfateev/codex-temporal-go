@@ -182,6 +182,13 @@ type SessionConfiguration struct {
 	// MCP server configurations. Each key is the server name.
 	// Maps to: codex-rs SessionConfiguration.mcp_servers
 	McpServers map[string]mcp.McpServerConfig `json:"mcp_servers,omitempty"`
+
+	// Memory subsystem configuration.
+	// Maps to: codex-rs MemoriesConfig
+	MemoryEnabled bool           `json:"memory_enabled,omitempty"`
+	MemoryConfig  MemoriesConfig `json:"memory_config,omitempty"`
+	MemoryDbPath  string         `json:"memory_db_path,omitempty"` // SQLite DB path (default: codex_home/state.sqlite)
+	MemoryRoot    string         `json:"memory_root,omitempty"`    // Memory folder root (default: codex_home/memories)
 }
 
 // DefaultSessionConfiguration returns sensible defaults.

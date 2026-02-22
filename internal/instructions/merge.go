@@ -28,6 +28,10 @@ type MergeInput struct {
 
 	// Cwd is the session working directory.
 	Cwd string
+
+	// MemorySummary is the formatted memory section to inject into
+	// developer instructions. Set by the workflow when memory is enabled.
+	MemorySummary string
 }
 
 // MergedInstructions is the result of merging all instruction sources.
@@ -69,6 +73,11 @@ func MergeInstructions(input MergeInput) MergedInstructions {
 	}
 	if projectDocs != "" {
 		userParts = append(userParts, projectDocs)
+	}
+
+	// Memory summary injected after project docs, before personal instructions
+	if input.MemorySummary != "" {
+		userParts = append(userParts, input.MemorySummary)
 	}
 
 	// Personal instructions always appended

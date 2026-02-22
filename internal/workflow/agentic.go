@@ -61,6 +61,11 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 		state.loadExecPolicy(ctx)
 	}
 
+	// Load memory summary at session start (only for root workflows)
+	if state.Config.MemoryEnabled && input.Depth == 0 {
+		state.loadMemorySummary(ctx)
+	}
+
 	// Generate initial turn ID
 	turnID := state.nextTurnID()
 
@@ -134,6 +139,10 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context, ctrl *LoopControl)
 					logger.Info("Idle timeout reached but active children exist, deferring CAN")
 				} else {
 					logger.Info("Idle timeout reached, triggering ContinueAsNew")
+					// Extract memory before ContinueAsNew (root workflows only)
+					if s.Config.MemoryEnabled && s.AgentCtl != nil && s.AgentCtl.ParentDepth == 0 && s.MemoryExtractedAt == 0 {
+						s.extractMemoryOnShutdown(ctx)
+					}
 					return s.continueAsNew(ctx, ctrl)
 				}
 			}
@@ -152,6 +161,12 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context, ctrl *LoopControl)
 		// Check for shutdown
 		if ctrl.IsShutdown() {
 			logger.Info("Shutdown requested, completing workflow")
+
+			// Extract memory before shutdown (root workflows only)
+			if s.Config.MemoryEnabled && s.AgentCtl != nil && s.AgentCtl.ParentDepth == 0 {
+				s.extractMemoryOnShutdown(ctx)
+			}
+
 			items, _ := s.History.GetRawItems()
 			return WorkflowResult{
 				ConversationID:    s.ConversationID,
@@ -210,6 +225,10 @@ func (s *SessionState) runMultiTurnLoop(ctx workflow.Context, ctrl *LoopControl)
 		// stay alive for more input instead.
 		if !s.Config.Tools.HasTool("request_user_input") {
 			logger.Info("Auto-completing workflow (request_user_input disabled)")
+			// Extract memory before auto-complete (root workflows only)
+			if s.Config.MemoryEnabled && s.AgentCtl != nil && s.AgentCtl.ParentDepth == 0 {
+				s.extractMemoryOnShutdown(ctx)
+			}
 			items, _ := s.History.GetRawItems()
 			return WorkflowResult{
 				ConversationID:    s.ConversationID,
