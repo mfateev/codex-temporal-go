@@ -101,34 +101,18 @@ func isGitGlobalOptionWithInlineValue(arg string) bool {
 	return false
 }
 
+// isDangerousToCallWithExec checks if a command is truly destructive.
+//
+// NOTE: Git commands were removed from dangerous checks per Codex PR #11510.
+// Only truly destructive operations (rm -f, sudo) remain.
 func isDangerousToCallWithExec(command []string) bool {
 	if len(command) == 0 {
 		return false
 	}
 
 	cmd0 := command[0]
-	base := filepath.Base(cmd0)
 
 	switch {
-	case base == "git":
-		idx, subcommand, found := FindGitSubcommand(command, []string{"reset", "rm", "branch", "push", "clean"})
-		if !found {
-			return false
-		}
-
-		switch subcommand {
-		case "reset", "rm":
-			return true
-		case "branch":
-			return gitBranchIsDelete(command[idx+1:])
-		case "push":
-			return gitPushIsDangerous(command[idx+1:])
-		case "clean":
-			return gitCleanIsForce(command[idx+1:])
-		default:
-			return false
-		}
-
 	case cmd0 == "rm":
 		if len(command) > 1 {
 			arg1 := command[1]
@@ -147,67 +131,4 @@ func isDangerousToCallWithExec(command []string) bool {
 	default:
 		return false
 	}
-}
-
-func gitBranchIsDelete(branchArgs []string) bool {
-	for _, arg := range branchArgs {
-		if arg == "-d" || arg == "-D" || arg == "--delete" || strings.HasPrefix(arg, "--delete=") {
-			return true
-		}
-		if shortFlagGroupContains(arg, 'd') || shortFlagGroupContains(arg, 'D') {
-			return true
-		}
-	}
-	return false
-}
-
-// shortFlagGroupContains checks if a short-flag group like "-dv" contains the target char.
-func shortFlagGroupContains(arg string, target byte) bool {
-	if !strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "--") {
-		return false
-	}
-	for i := 1; i < len(arg); i++ {
-		if arg[i] == target {
-			return true
-		}
-	}
-	return false
-}
-
-func gitPushIsDangerous(pushArgs []string) bool {
-	for _, arg := range pushArgs {
-		switch arg {
-		case "--force", "--force-with-lease", "--force-if-includes", "--delete", "-f", "-d":
-			return true
-		}
-		if strings.HasPrefix(arg, "--force-with-lease=") ||
-			strings.HasPrefix(arg, "--force-if-includes=") ||
-			strings.HasPrefix(arg, "--delete=") {
-			return true
-		}
-		if shortFlagGroupContains(arg, 'f') || shortFlagGroupContains(arg, 'd') {
-			return true
-		}
-		if gitPushRefspecIsDangerous(arg) {
-			return true
-		}
-	}
-	return false
-}
-
-func gitPushRefspecIsDangerous(arg string) bool {
-	// `+<refspec>` forces updates and `:<dst>` deletes remote refs.
-	return (strings.HasPrefix(arg, "+") || strings.HasPrefix(arg, ":")) && len(arg) > 1
-}
-
-func gitCleanIsForce(cleanArgs []string) bool {
-	for _, arg := range cleanArgs {
-		if arg == "--force" || arg == "-f" || strings.HasPrefix(arg, "--force=") {
-			return true
-		}
-		if shortFlagGroupContains(arg, 'f') {
-			return true
-		}
-	}
-	return false
 }
