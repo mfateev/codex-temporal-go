@@ -85,10 +85,11 @@ func (m *ExecPolicyManager) EvaluateCommand(cmd []string, approvalMode string) t
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Parse bash -lc "..." into individual commands
+	// Parse bash -lc "..." into individual commands.
+	// Guard against empty results (e.g. empty/whitespace scripts) per Codex PR #11397.
 	subCommands := command_safety.ParseShellLcPlainCommands(cmd)
-	if subCommands == nil {
-		// Can't parse — treat the whole command as a single unit
+	if subCommands == nil || len(subCommands) == 0 {
+		// Can't parse or empty — treat the whole command as a single unit
 		subCommands = [][]string{cmd}
 	}
 
@@ -111,7 +112,7 @@ func (m *ExecPolicyManager) GetEvaluation(cmd []string, approvalMode string) Eva
 	defer m.mu.RUnlock()
 
 	subCommands := command_safety.ParseShellLcPlainCommands(cmd)
-	if subCommands == nil {
+	if subCommands == nil || len(subCommands) == 0 {
 		subCommands = [][]string{cmd}
 	}
 

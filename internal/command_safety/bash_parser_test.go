@@ -118,3 +118,25 @@ func TestRejectsConcatenationWithCommandSubstitution(t *testing.T) {
 	assert.Nil(t, parseWordOnlyCommandsSequence(`rg -g"$(pwd)" pattern`))
 	assert.Nil(t, parseWordOnlyCommandsSequence(`rg -g"$(echo '*.py')" pattern`))
 }
+
+// Tests for empty command position rejection (Codex PR #11397).
+
+func TestRejectsEmptyCommandPositionWithLeadingOperator(t *testing.T) {
+	assert.Nil(t, parseWordOnlyCommandsSequence("&& ls"))
+}
+
+func TestRejectsEmptyCommandPositionWithDoubleSeparator(t *testing.T) {
+	assert.Nil(t, parseWordOnlyCommandsSequence("ls ;; pwd"))
+}
+
+func TestRejectsEmptyCommandPositionWithEmptyPipelineSegment(t *testing.T) {
+	assert.Nil(t, parseWordOnlyCommandsSequence("ls | | wc"))
+}
+
+func TestEmptyScriptReturnsNil(t *testing.T) {
+	assert.Nil(t, parseWordOnlyCommandsSequence(""))
+}
+
+func TestWhitespaceOnlyScriptReturnsNil(t *testing.T) {
+	assert.Nil(t, parseWordOnlyCommandsSequence("  \n\t  "))
+}

@@ -162,6 +162,32 @@ func TestGetEvaluation(t *testing.T) {
 	assert.Equal(t, "deleting files is dangerous", eval.Justification)
 }
 
+// Tests for empty command list validation (Codex PR #11397).
+
+func TestEvaluateCommand_EmptyBashScript_FallsBackToOriginal(t *testing.T) {
+	m := NewExecPolicyManager(NewPolicy())
+
+	// bash -lc "" should fall back to treating the original command as-is
+	req := m.EvaluateCommand([]string{"bash", "-lc", ""}, "unless-trusted")
+	assert.Equal(t, tools.ApprovalNeeded, req)
+}
+
+func TestEvaluateCommand_WhitespaceBashScript_FallsBackToOriginal(t *testing.T) {
+	m := NewExecPolicyManager(NewPolicy())
+
+	// bash -lc "  \n\t  " should fall back to treating the original command as-is
+	req := m.EvaluateCommand([]string{"bash", "-lc", "  \n\t  "}, "unless-trusted")
+	assert.Equal(t, tools.ApprovalNeeded, req)
+}
+
+func TestGetEvaluation_EmptyBashScript_FallsBackToOriginal(t *testing.T) {
+	m := NewExecPolicyManager(NewPolicy())
+
+	eval := m.GetEvaluation([]string{"bash", "-lc", ""}, "unless-trusted")
+	assert.Equal(t, DecisionPrompt, eval.Decision)
+	assert.True(t, eval.UsedFallback)
+}
+
 func TestAppendAndReload(t *testing.T) {
 	dir := t.TempDir()
 	rulesDir := filepath.Join(dir, "rules")
