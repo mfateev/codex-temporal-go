@@ -350,6 +350,31 @@ func sendUpdateModelCmd(c client.Client, workflowID, provider, model string) tea
 	}
 }
 
+// sendUpdateApprovalModeCmd sends an update_approval_mode Update to the workflow.
+func sendUpdateApprovalModeCmd(c client.Client, workflowID, mode string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID:   workflowID,
+			UpdateName:   workflow.UpdateApprovalMode,
+			Args:         []interface{}{workflow.UpdateApprovalModeRequest{ApprovalMode: mode}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return ApprovalModeUpdateErrorMsg{Err: err}
+		}
+
+		var resp workflow.UpdateApprovalModeResponse
+		if err := updateHandle.Get(ctx, &resp); err != nil {
+			return ApprovalModeUpdateErrorMsg{Err: err}
+		}
+
+		return ApprovalModeUpdateSentMsg{Mode: mode}
+	}
+}
+
 // queryMcpToolsCmd queries the workflow for its MCP tool lookup table.
 func queryMcpToolsCmd(c client.Client, workflowID string) tea.Cmd {
 	return func() tea.Msg {

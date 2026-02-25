@@ -163,6 +163,16 @@ type InitErrorMsg struct {
 	Err error
 }
 
+// ApprovalModeUpdateSentMsg is sent after an approval mode update succeeds.
+type ApprovalModeUpdateSentMsg struct {
+	Mode string
+}
+
+// ApprovalModeUpdateErrorMsg is sent when an approval mode update fails.
+type ApprovalModeUpdateErrorMsg struct {
+	Err error
+}
+
 // McpToolsResultMsg is sent when the MCP tools query completes.
 type McpToolsResultMsg struct {
 	Tools []workflow.McpToolSummary

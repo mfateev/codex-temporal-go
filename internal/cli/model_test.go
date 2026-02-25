@@ -856,6 +856,48 @@ func TestModel_TurnCompleteNoSuggestionPollWhenDisabled(t *testing.T) {
 	assert.Equal(t, "", m.suggestion)
 }
 
+// --- /approvals command tests ---
+
+func TestModel_ApprovalsCommand_NoSession(t *testing.T) {
+	m := newTestModel()
+	m.workflowID = ""
+
+	m.textarea.SetValue("/approvals")
+	result, _ := m.handleInputKey(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(*Model)
+	assert.Equal(t, StateInput, rm.state)
+	assert.Contains(t, rm.viewportContent, "No active session")
+}
+
+func TestModel_ApprovalsCommand_ShowsSelector(t *testing.T) {
+	m := newTestModel()
+	m.workflowID = "test-wf"
+
+	m.textarea.SetValue("/approvals")
+	result, _ := m.handleInputKey(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(*Model)
+	assert.True(t, rm.selectingApprovalMode)
+	assert.NotNil(t, rm.selector)
+	assert.Contains(t, rm.viewportContent, "Select approval mode")
+}
+
+func TestModel_ApprovalsCommand_EscCancels(t *testing.T) {
+	m := newTestModel()
+	m.workflowID = "test-wf"
+	m.selectingApprovalMode = true
+	m.selector = NewSelectorModel([]SelectorOption{
+		{Label: "unless-trusted"},
+		{Label: "never"},
+	}, m.styles)
+	m.selector.SetWidth(m.width)
+
+	result, _ := m.handleInputKey(tea.KeyMsg{Type: tea.KeyEsc})
+	rm := result.(*Model)
+	assert.False(t, rm.selectingApprovalMode)
+	assert.Nil(t, rm.selector)
+	assert.Equal(t, StateInput, rm.state)
+}
+
 // --- Plan change detection tests ---
 
 func TestPlanChanged(t *testing.T) {

@@ -78,6 +78,10 @@ const (
 
 	// UpdateCleanExecSessions closes all exec sessions and returns count.
 	UpdateCleanExecSessions = "clean_exec_sessions"
+
+	// UpdateApprovalMode changes the session's approval mode mid-session.
+	// Used by the CLI /approvals command.
+	UpdateApprovalMode = "update_approval_mode"
 )
 
 // UpdateModelRequest is the payload for the update_model Update.
@@ -123,6 +127,16 @@ type CleanExecSessionsRequest struct{}
 // CleanExecSessionsResponse is returned by the clean_exec_sessions Update.
 type CleanExecSessionsResponse struct {
 	Closed int `json:"closed"`
+}
+
+// UpdateApprovalModeRequest is the payload for the update_approval_mode Update.
+type UpdateApprovalModeRequest struct {
+	ApprovalMode string `json:"approval_mode"`
+}
+
+// UpdateApprovalModeResponse is returned by the update_approval_mode Update.
+type UpdateApprovalModeResponse struct {
+	Acknowledged bool `json:"acknowledged"`
 }
 
 // TurnPhase indicates the current phase of the workflow turn.

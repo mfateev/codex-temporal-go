@@ -211,6 +211,9 @@ type Model struct {
 	// Session picker state
 	selectingSession bool
 	sessionEntries   []SessionListEntry
+
+	// /approvals command state
+	selectingApprovalMode bool
 }
 
 // NewModel creates a new bubbletea model.
@@ -482,6 +485,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DiffResultMsg:
 		m.appendToViewport(msg.Output + "\n")
 
+	case ApprovalModeUpdateSentMsg:
+		m.appendToViewport(m.renderer.RenderSystemMessage(
+			fmt.Sprintf("Approval mode updated to %s.", msg.Mode)))
+		m.selectingApprovalMode = false
+		m.selector = nil
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case ApprovalModeUpdateErrorMsg:
+		m.appendToViewport(fmt.Sprintf("Error updating approval mode: %v\n", msg.Err))
+		m.selectingApprovalMode = false
+		m.selector = nil
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
 	case InitResultMsg:
 		if msg.AlreadyExists {
 			m.appendToViewport(m.renderer.RenderSystemMessage(
@@ -577,7 +595,7 @@ func (m Model) View() string {
 			inputView = m.spinner.View() + " " + m.styles.SpinnerMessage.Render("Loading sessions...")
 		}
 	case StateInput:
-		if m.selectingModel && m.selector != nil {
+		if (m.selectingModel || m.selectingApprovalMode) && m.selector != nil {
 			inputView = m.selector.View()
 		} else {
 			inputView = m.textarea.View()
@@ -784,6 +802,46 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// /approvals selection uses the selector UI.
+	if m.selectingApprovalMode {
+		if m.selector != nil {
+			if m.isViewportScrollKey(msg) {
+				var cmd tea.Cmd
+				m.viewport, cmd = m.viewport.Update(msg)
+				return m, cmd
+			}
+
+			done := m.selector.Update(msg)
+			if done {
+				m.selectingApprovalMode = false
+				if m.selector.Cancelled() {
+					m.selector = nil
+					m.state = StateInput
+					return m, m.focusTextarea()
+				}
+				idx := m.selector.Selected()
+				m.selector = nil
+				modes := []string{"unless-trusted", "never"}
+				if idx < 0 || idx >= len(modes) {
+					m.appendToViewport("Invalid selection.\n")
+					m.state = StateInput
+					return m, m.focusTextarea()
+				}
+				m.spinnerMsg = "Updating approval mode..."
+				m.state = StateWatching
+				m.textarea.Blur()
+				return m, sendUpdateApprovalModeCmd(m.client, m.workflowID, modes[idx])
+			}
+			return m, nil
+		}
+		if msg.Type == tea.KeyEsc {
+			m.selectingApprovalMode = false
+			m.state = StateInput
+			return m, m.focusTextarea()
+		}
+		return m, nil
+	}
+
 	// Intercept multi-line paste: show "[N lines pasted]" placeholder
 	if msg.Paste && msg.Type == tea.KeyRunes && strings.ContainsRune(string(msg.Runes), '\n') {
 		content := string(msg.Runes)
@@ -947,6 +1005,22 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StateWatching
 			m.textarea.Blur()
 			return m, cleanExecSessionsCmd(m.client, m.workflowID)
+		}
+		if line == "/approvals" {
+			if m.workflowID == "" {
+				m.appendToViewport("No active session.\n")
+				return m, nil
+			}
+			m.appendToViewport(m.renderer.RenderSystemMessage("Select approval mode (Esc to cancel):"))
+			m.selector = NewSelectorModel([]SelectorOption{
+				{Label: "unless-trusted — Prompt for all mutating tools"},
+				{Label: "never — Auto-approve everything"},
+			}, m.styles)
+			m.selector.SetWidth(m.width)
+			m.selectingApprovalMode = true
+			m.state = StateInput
+			m.textarea.Blur()
+			return m, nil
 		}
 		if line == "/init" {
 			cwd := m.config.Cwd
