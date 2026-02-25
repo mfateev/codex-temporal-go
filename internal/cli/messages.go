@@ -146,6 +146,11 @@ type DiffResultMsg struct {
 	Output string
 }
 
+// ReviewResultMsg is sent when the background git diff for /review completes.
+type ReviewResultMsg struct {
+	Output string
+}
+
 // McpToolsResultMsg is sent when the MCP tools query completes.
 type McpToolsResultMsg struct {
 	Tools []workflow.McpToolSummary

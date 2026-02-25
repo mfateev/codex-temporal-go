@@ -482,6 +482,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DiffResultMsg:
 		m.appendToViewport(msg.Output + "\n")
 
+	case ReviewResultMsg:
+		reviewMsg := buildReviewMessage(msg.Output)
+		if reviewMsg == "" {
+			m.appendToViewport("No changes to review.\n")
+		} else {
+			// Show the review prompt in viewport as a user message
+			m.appendToViewport(m.renderer.RenderUserMessage(models.ConversationItem{
+				Type:    models.ItemTypeUserMessage,
+				Content: "[/review] Reviewing current changes...",
+			}))
+			m.state = StateWatching
+			m.spinnerMsg = "Thinking..."
+			m.textarea.Blur()
+			return &m, sendUserInputCmd(m.client, m.workflowID, reviewMsg)
+		}
+
 	case McpToolsResultMsg:
 		m.appendToViewport(formatMcpToolsDisplay(msg.Tools, m.styles))
 		m.state = StateInput
@@ -919,6 +935,17 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StateWatching
 			m.textarea.Blur()
 			return m, cleanExecSessionsCmd(m.client, m.workflowID)
+		}
+		if line == "/review" {
+			if m.workflowID == "" {
+				m.appendToViewport("No active session. Start a session first.\n")
+				return m, nil
+			}
+			cwd := m.config.Cwd
+			if cwd == "" {
+				cwd, _ = os.Getwd()
+			}
+			return m, runReviewDiffCmd(cwd)
 		}
 
 		// Show user message in viewport (❯ prefix, no separators)
