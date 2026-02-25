@@ -141,6 +141,41 @@ type SuggestionPollMsg struct {
 	Suggestion string
 }
 
+// DiffResultMsg is sent when the background git diff completes.
+type DiffResultMsg struct {
+	Output string
+}
+
+// McpToolsResultMsg is sent when the MCP tools query completes.
+type McpToolsResultMsg struct {
+	Tools []workflow.McpToolSummary
+}
+
+// McpToolsErrorMsg is sent when the MCP tools query fails.
+type McpToolsErrorMsg struct {
+	Err error
+}
+
+// ExecSessionsResultMsg is sent when the exec sessions list is fetched.
+type ExecSessionsResultMsg struct {
+	Sessions []workflow.ExecSessionSummary
+}
+
+// ExecSessionsErrorMsg is sent when listing exec sessions fails.
+type ExecSessionsErrorMsg struct {
+	Err error
+}
+
+// CleanExecSessionsResultMsg is sent when exec sessions are cleaned.
+type CleanExecSessionsResultMsg struct {
+	Closed int
+}
+
+// CleanExecSessionsErrorMsg is sent when cleaning exec sessions fails.
+type CleanExecSessionsErrorMsg struct {
+	Err error
+}
+
 // HarnessSessionsMsg is returned when the harness's session list is fetched successfully.
 type HarnessSessionsMsg struct {
 	Sessions []workflow.SessionEntry
