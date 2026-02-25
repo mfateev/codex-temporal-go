@@ -99,3 +99,36 @@ func TestLoadPersonalInstructions_EmptyCodexHome(t *testing.T) {
 	require.NoError(t, err)
 	_ = result // Instructions may or may not be set depending on the environment
 }
+
+func TestLoadConfigFile_FileExists(t *testing.T) {
+	dir := t.TempDir()
+	content := `model = "gpt-4o"` + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o644))
+
+	a := NewInstructionActivities()
+	result, err := a.LoadConfigFile(context.Background(), LoadConfigFileInput{
+		CodexHome: dir,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, content, result.RawTOML)
+}
+
+func TestLoadConfigFile_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+
+	a := NewInstructionActivities()
+	result, err := a.LoadConfigFile(context.Background(), LoadConfigFileInput{
+		CodexHome: dir,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.RawTOML)
+}
+
+func TestLoadConfigFile_EmptyCodexHome(t *testing.T) {
+	a := NewInstructionActivities()
+	result, err := a.LoadConfigFile(context.Background(), LoadConfigFileInput{
+		CodexHome: "",
+	})
+	require.NoError(t, err)
+	_ = result // RawTOML may or may not be set depending on the environment
+}

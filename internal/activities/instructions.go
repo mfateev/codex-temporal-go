@@ -144,3 +144,38 @@ func (a *InstructionActivities) LoadPersonalInstructions(
 	}
 	return LoadPersonalInstructionsOutput{Instructions: string(data)}, nil
 }
+
+// LoadConfigFileInput is the input for the LoadConfigFile activity.
+type LoadConfigFileInput struct {
+	// CodexHome is the path to the codex config directory (default: ~/.codex).
+	// If empty, the activity resolves it via os.UserHomeDir().
+	CodexHome string `json:"codex_home,omitempty"`
+}
+
+// LoadConfigFileOutput is the result of the LoadConfigFile activity.
+type LoadConfigFileOutput struct {
+	// RawTOML contains the content of ~/.codex/config.toml.
+	// Empty if the file does not exist (non-fatal).
+	RawTOML string `json:"raw_toml,omitempty"`
+}
+
+// LoadConfigFile reads ~/.codex/config.toml from the worker's filesystem.
+// Non-fatal: returns empty output (no error) if the file is missing or
+// any I/O error occurs. Parsing is deterministic and happens in the workflow.
+func (a *InstructionActivities) LoadConfigFile(
+	_ context.Context, input LoadConfigFileInput,
+) (LoadConfigFileOutput, error) {
+	configDir := input.CodexHome
+	if configDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return LoadConfigFileOutput{}, nil
+		}
+		configDir = filepath.Join(home, ".codex")
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "config.toml"))
+	if err != nil {
+		return LoadConfigFileOutput{}, nil
+	}
+	return LoadConfigFileOutput{RawTOML: string(data)}, nil
+}

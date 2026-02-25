@@ -34,6 +34,10 @@ func LoadPersonalInstructions(_ context.Context, _ activities.LoadPersonalInstru
 	panic("stub: should be mocked")
 }
 
+func LoadConfigFile(_ context.Context, _ activities.LoadConfigFileInput) (activities.LoadConfigFileOutput, error) {
+	panic("stub: should be mocked")
+}
+
 // HarnessWorkflowTestSuite runs HarnessWorkflow tests with the Temporal test environment.
 type HarnessWorkflowTestSuite struct {
 	suite.Suite
@@ -52,6 +56,7 @@ func (s *HarnessWorkflowTestSuite) SetupTest() {
 	s.env.RegisterActivity(LoadWorkerInstructions)
 	s.env.RegisterActivity(LoadExecPolicy)
 	s.env.RegisterActivity(LoadPersonalInstructions)
+	s.env.RegisterActivity(LoadConfigFile)
 
 	// Default mock for LoadWorkerInstructions — returns empty docs.
 	s.env.OnActivity("LoadWorkerInstructions", mock.Anything, mock.Anything).
@@ -64,6 +69,10 @@ func (s *HarnessWorkflowTestSuite) SetupTest() {
 	// Default mock for LoadPersonalInstructions — returns empty instructions.
 	s.env.OnActivity("LoadPersonalInstructions", mock.Anything, mock.Anything).
 		Return(activities.LoadPersonalInstructionsOutput{}, nil).Maybe()
+
+	// Default mock for LoadConfigFile — returns empty TOML.
+	s.env.OnActivity("LoadConfigFile", mock.Anything, mock.Anything).
+		Return(activities.LoadConfigFileOutput{}, nil).Maybe()
 
 	// Register AgenticWorkflow as a child workflow that completes immediately.
 	s.env.RegisterWorkflow(AgenticWorkflow)
@@ -224,6 +233,8 @@ func (s *HarnessWorkflowTestSuite) TestHarness_ActivityCallsOnStart() {
 		"LoadWorkerInstructions should be called exactly once on start")
 	assert.Equal(s.T(), 1, callCounts["LoadPersonalInstructions"],
 		"LoadPersonalInstructions should be called exactly once on start")
+	assert.Equal(s.T(), 1, callCounts["LoadConfigFile"],
+		"LoadConfigFile should be called exactly once on start")
 	// LoadExecPolicy is skipped when CodexHome is empty (the default).
 	assert.Equal(s.T(), 0, callCounts["LoadExecPolicy"],
 		"LoadExecPolicy should not be called when CodexHome is empty")

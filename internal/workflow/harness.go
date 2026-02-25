@@ -260,8 +260,27 @@ func resolveHarnessConfig(ctx workflow.Context, overrides CLIOverrides) (models.
 		Cwd:                      overrides.Cwd,
 	})
 
+	// Load config.toml from worker filesystem.
+	var loadConfigResult activities.LoadConfigFileOutput
+	loadConfigInput := activities.LoadConfigFileInput{
+		CodexHome: overrides.CodexHome,
+	}
+	if err := workflow.ExecuteActivity(actCtx, "LoadConfigFile", loadConfigInput).Get(ctx, &loadConfigResult); err != nil {
+		logger.Warn("Failed to load config file", "error", err)
+	}
+
 	// Assemble SessionConfiguration from defaults + overrides + resolved data.
 	cfg := models.DefaultSessionConfiguration()
+
+	// Apply TOML config (between defaults and CLI overrides).
+	if loadConfigResult.RawTOML != "" {
+		tomlCfg, err := models.ParseConfigToml([]byte(loadConfigResult.RawTOML))
+		if err != nil {
+			logger.Warn("Failed to parse config.toml", "error", err)
+		} else {
+			tomlCfg.ApplyToConfig(&cfg)
+		}
+	}
 
 	cfg.BaseInstructions = merged.Base
 	cfg.DeveloperInstructions = merged.Developer
