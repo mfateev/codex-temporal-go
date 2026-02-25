@@ -478,6 +478,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendToViewport("Session closed.\n")
 		m.quitting = true
 		return &m, tea.Quit
+
+	case DiffResultMsg:
+		m.appendToViewport(msg.Output + "\n")
+
+	case McpToolsResultMsg:
+		m.appendToViewport(formatMcpToolsDisplay(msg.Tools, m.styles))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case McpToolsErrorMsg:
+		m.appendToViewport(fmt.Sprintf("Error fetching MCP tools: %v\n", msg.Err))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case ExecSessionsResultMsg:
+		m.appendToViewport(formatExecSessionsDisplay(msg.Sessions))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case ExecSessionsErrorMsg:
+		m.appendToViewport(fmt.Sprintf("Error listing exec sessions: %v\n", msg.Err))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case CleanExecSessionsResultMsg:
+		if msg.Closed == 0 {
+			m.appendToViewport("No exec sessions to clean.\n")
+		} else {
+			m.appendToViewport(fmt.Sprintf("Closed %d exec session(s).\n", msg.Closed))
+		}
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case CleanExecSessionsErrorMsg:
+		m.appendToViewport(fmt.Sprintf("Error cleaning exec sessions: %v\n", msg.Err))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
 	}
 
 	return &m, tea.Batch(cmds...)
@@ -841,6 +878,47 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StateWatching
 			m.textarea.Blur()
 			return m, sendShutdownCmd(m.client, m.workflowID)
+		}
+		if line == "/diff" {
+			cwd := m.config.Cwd
+			if cwd == "" {
+				cwd, _ = os.Getwd()
+			}
+			return m, runGitDiffCmd(cwd)
+		}
+		if line == "/status" {
+			m.appendToViewport(m.formatStatusDisplay())
+			return m, nil
+		}
+		if line == "/mcp" {
+			if m.workflowID == "" {
+				m.appendToViewport("No active session.\n")
+				return m, nil
+			}
+			m.spinnerMsg = "Fetching MCP tools..."
+			m.state = StateWatching
+			m.textarea.Blur()
+			return m, queryMcpToolsCmd(m.client, m.workflowID)
+		}
+		if line == "/ps" {
+			if m.workflowID == "" {
+				m.appendToViewport("No active session.\n")
+				return m, nil
+			}
+			m.spinnerMsg = "Listing exec sessions..."
+			m.state = StateWatching
+			m.textarea.Blur()
+			return m, queryExecSessionsCmd(m.client, m.workflowID)
+		}
+		if line == "/clean" {
+			if m.workflowID == "" {
+				m.appendToViewport("No active session.\n")
+				return m, nil
+			}
+			m.spinnerMsg = "Cleaning exec sessions..."
+			m.state = StateWatching
+			m.textarea.Blur()
+			return m, cleanExecSessionsCmd(m.client, m.workflowID)
 		}
 
 		// Show user message in viewport (❯ prefix, no separators)

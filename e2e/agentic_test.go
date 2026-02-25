@@ -491,6 +491,10 @@ func createWorker(c client.Client) worker.Worker {
 	w.RegisterActivity(mcpActivities.InitializeMcpServers)
 	w.RegisterActivity(mcpActivities.CleanupMcpServers)
 
+	execSessionActivities := activities.NewExecSessionActivities(execStore)
+	w.RegisterActivity(execSessionActivities.ListExecSessions)
+	w.RegisterActivity(execSessionActivities.CleanExecSessions)
+
 	return w
 }
 

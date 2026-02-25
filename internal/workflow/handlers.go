@@ -8,9 +8,11 @@ package workflow
 
 import (
 	"fmt"
+	"time"
 
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/mfateev/temporal-agent-harness/internal/activities"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
 	"github.com/mfateev/temporal-agent-harness/internal/version"
 )
@@ -464,6 +466,91 @@ func (s *SessionState) registerHandlers(ctx workflow.Context, ctrl *LoopControl)
 	)
 	if err != nil {
 		logger.Error("Failed to register get_state_update update handler", "error", err)
+	}
+
+	// Query: get_mcp_tools
+	// Returns the list of registered MCP tools for the /mcp CLI command.
+	err = workflow.SetQueryHandler(ctx, QueryGetMcpTools, func() ([]McpToolSummary, error) {
+		var summaries []McpToolSummary
+		for qualifiedName, ref := range s.McpToolLookup {
+			summaries = append(summaries, McpToolSummary{
+				QualifiedName: qualifiedName,
+				ServerName:    ref.ServerName,
+				ToolName:      ref.ToolName,
+			})
+		}
+		return summaries, nil
+	})
+	if err != nil {
+		logger.Error("Failed to register get_mcp_tools query handler", "error", err)
+	}
+
+	// Update: list_exec_sessions
+	// Executes a local activity to list exec sessions from the worker's store.
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdateListExecSessions,
+		func(ctx workflow.Context, req ListExecSessionsRequest) (ListExecSessionsResponse, error) {
+			actCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
+				ScheduleToCloseTimeout: 5 * time.Second,
+			})
+			var actResp activities.ListExecSessionsResponse
+			if err := workflow.ExecuteLocalActivity(actCtx, "ListExecSessions", activities.ListExecSessionsRequest{}).Get(ctx, &actResp); err != nil {
+				return ListExecSessionsResponse{}, err
+			}
+			// Convert activities types to workflow types.
+			summaries := make([]ExecSessionSummary, len(actResp.Sessions))
+			for i, s := range actResp.Sessions {
+				summaries[i] = ExecSessionSummary{
+					ProcessID: s.ProcessID,
+					Command:   s.Command,
+					Cwd:       s.Cwd,
+					StartedAt: s.StartedAt,
+					Exited:    s.Exited,
+					ExitCode:  s.ExitCode,
+				}
+			}
+			return ListExecSessionsResponse{Sessions: summaries}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, req ListExecSessionsRequest) error {
+				if ctrl.IsShutdown() {
+					return fmt.Errorf("session is shutting down")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register list_exec_sessions update handler", "error", err)
+	}
+
+	// Update: clean_exec_sessions
+	// Executes a local activity to close all exec sessions.
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdateCleanExecSessions,
+		func(ctx workflow.Context, req CleanExecSessionsRequest) (CleanExecSessionsResponse, error) {
+			actCtx := workflow.WithLocalActivityOptions(ctx, workflow.LocalActivityOptions{
+				ScheduleToCloseTimeout: 10 * time.Second,
+			})
+			var actResp activities.CleanExecSessionsResponse
+			if err := workflow.ExecuteLocalActivity(actCtx, "CleanExecSessions", activities.CleanExecSessionsRequest{}).Get(ctx, &actResp); err != nil {
+				return CleanExecSessionsResponse{}, err
+			}
+			return CleanExecSessionsResponse{Closed: actResp.Closed}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, req CleanExecSessionsRequest) error {
+				if ctrl.IsShutdown() {
+					return fmt.Errorf("session is shutting down")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register clean_exec_sessions update handler", "error", err)
 	}
 
 	// Signal channels for child workflow mode (subagent).

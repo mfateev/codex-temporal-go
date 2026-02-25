@@ -6,6 +6,8 @@
 package workflow
 
 import (
+	"time"
+
 	"github.com/mfateev/temporal-agent-harness/internal/history"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
@@ -67,6 +69,15 @@ const (
 	// Replaces the polling loop: the handler sleeps via workflow.Await until
 	// state actually changes, then returns new items + status in one call.
 	UpdateGetStateUpdate = "get_state_update"
+
+	// QueryGetMcpTools returns the list of registered MCP tools.
+	QueryGetMcpTools = "get_mcp_tools"
+
+	// UpdateListExecSessions lists active exec sessions.
+	UpdateListExecSessions = "list_exec_sessions"
+
+	// UpdateCleanExecSessions closes all exec sessions and returns count.
+	UpdateCleanExecSessions = "clean_exec_sessions"
 )
 
 // UpdateModelRequest is the payload for the update_model Update.
@@ -79,6 +90,39 @@ type UpdateModelRequest struct {
 // UpdateModelResponse is returned by the update_model Update.
 type UpdateModelResponse struct {
 	Acknowledged bool `json:"acknowledged"`
+}
+
+// McpToolSummary is a lightweight view of an MCP tool for the get_mcp_tools query.
+type McpToolSummary struct {
+	QualifiedName string `json:"qualified_name"`
+	ServerName    string `json:"server_name"`
+	ToolName      string `json:"tool_name"`
+}
+
+// ExecSessionSummary is a lightweight view of an exec session for the CLI.
+type ExecSessionSummary struct {
+	ProcessID string    `json:"process_id"`
+	Command   string    `json:"command"`
+	Cwd       string    `json:"cwd"`
+	StartedAt time.Time `json:"started_at"`
+	Exited    bool      `json:"exited"`
+	ExitCode  int       `json:"exit_code"`
+}
+
+// ListExecSessionsRequest is the payload for the list_exec_sessions Update.
+type ListExecSessionsRequest struct{}
+
+// ListExecSessionsResponse is returned by the list_exec_sessions Update.
+type ListExecSessionsResponse struct {
+	Sessions []ExecSessionSummary `json:"sessions"`
+}
+
+// CleanExecSessionsRequest is the payload for the clean_exec_sessions Update.
+type CleanExecSessionsRequest struct{}
+
+// CleanExecSessionsResponse is returned by the clean_exec_sessions Update.
+type CleanExecSessionsResponse struct {
+	Closed int `json:"closed"`
 }
 
 // TurnPhase indicates the current phase of the workflow turn.

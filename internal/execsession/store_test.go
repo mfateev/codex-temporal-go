@@ -191,3 +191,82 @@ func TestStore_PruningPrefersExitedOverRunning(t *testing.T) {
 	// The running session might or might not survive depending on count, but
 	// the key invariant is that exited sessions are pruned preferentially.
 }
+
+func TestStore_ListAll(t *testing.T) {
+	store := NewStore()
+
+	// Empty store.
+	assert.Empty(t, store.ListAll())
+
+	// Add sessions.
+	sess1 := &ExecSession{
+		ProcessID: "1001",
+		Command:   []string{"echo", "hello"},
+		Cwd:       "/tmp",
+		StartedAt: time.Now(),
+		LastUsed:  time.Now(),
+		exitCh:    make(chan struct{}),
+		outputBuf: NewHeadTailBuffer(1024),
+	}
+	sess2 := &ExecSession{
+		ProcessID: "1002",
+		Command:   []string{"sleep", "10"},
+		Cwd:       "/home",
+		StartedAt: time.Now(),
+		LastUsed:  time.Now(),
+		exitCh:    make(chan struct{}),
+		outputBuf: NewHeadTailBuffer(1024),
+	}
+	sess2.exited.Store(true)
+	sess2.exitCode.Store(0)
+
+	store.Store(sess1)
+	store.Store(sess2)
+
+	summaries := store.ListAll()
+	assert.Len(t, summaries, 2)
+
+	// Find by PID.
+	var found1001, found1002 bool
+	for _, s := range summaries {
+		switch s.ProcessID {
+		case "1001":
+			found1001 = true
+			assert.Equal(t, "echo hello", s.Command)
+			assert.Equal(t, "/tmp", s.Cwd)
+			assert.False(t, s.Exited)
+		case "1002":
+			found1002 = true
+			assert.Equal(t, "sleep 10", s.Command)
+			assert.True(t, s.Exited)
+			assert.Equal(t, 0, s.ExitCode)
+		}
+	}
+	assert.True(t, found1001, "session 1001 should be in list")
+	assert.True(t, found1002, "session 1002 should be in list")
+}
+
+func TestStore_CloseAll(t *testing.T) {
+	store := NewStore()
+
+	// Empty store.
+	assert.Equal(t, 0, store.CloseAll())
+
+	// Add sessions.
+	for i := 0; i < 3; i++ {
+		id := strconv.Itoa(5000 + i)
+		sess := &ExecSession{
+			ProcessID: id,
+			StartedAt: time.Now(),
+			LastUsed:  time.Now(),
+			exitCh:    make(chan struct{}),
+			outputBuf: NewHeadTailBuffer(1024),
+		}
+		store.Store(sess)
+	}
+	assert.Equal(t, 3, store.Count())
+
+	closed := store.CloseAll()
+	assert.Equal(t, 3, closed)
+	assert.Equal(t, 0, store.Count())
+}

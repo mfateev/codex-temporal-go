@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 )
 
 // Session store constants matching Codex.
@@ -100,6 +102,52 @@ func (s *Store) Count() int {
 	defer s.mu.Unlock()
 
 	return len(s.sessions)
+}
+
+// ListAll returns a summary of all sessions in the store.
+func (s *Store) ListAll() []SessionSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	summaries := make([]SessionSummary, 0, len(s.sessions))
+	for _, sess := range s.sessions {
+		sum := SessionSummary{
+			ProcessID: sess.ProcessID,
+			Command:   strings.Join(sess.Command, " "),
+			Cwd:       sess.Cwd,
+			StartedAt: sess.StartedAt,
+			Exited:    sess.HasExited(),
+		}
+		if code := sess.ExitCode(); code != nil {
+			sum.ExitCode = *code
+		}
+		summaries = append(summaries, sum)
+	}
+	return summaries
+}
+
+// CloseAll closes all sessions and returns the number closed.
+func (s *Store) CloseAll() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	count := len(s.sessions)
+	for id, sess := range s.sessions {
+		sess.Close()
+		delete(s.sessions, id)
+		delete(s.reserved, id)
+	}
+	return count
+}
+
+// SessionSummary is a lightweight view of an exec session.
+type SessionSummary struct {
+	ProcessID string
+	Command   string
+	Cwd       string
+	StartedAt time.Time
+	Exited    bool
+	ExitCode  int
 }
 
 // pruneOneLocked evicts the least recently used session, preferring exited

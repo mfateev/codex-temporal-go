@@ -105,6 +105,10 @@ func main() {
 	w.RegisterActivity(mcpActivities.InitializeMcpServers)
 	w.RegisterActivity(mcpActivities.CleanupMcpServers)
 
+	execSessionActivities := activities.NewExecSessionActivities(execStore)
+	w.RegisterActivity(execSessionActivities.ListExecSessions)
+	w.RegisterActivity(execSessionActivities.CleanExecSessions)
+
 	// Memory activities (SQLite DB opened lazily on first use)
 	home, _ := os.UserHomeDir()
 	dbPath := filepath.Join(home, ".codex", "state.sqlite")
