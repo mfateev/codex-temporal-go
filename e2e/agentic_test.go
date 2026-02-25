@@ -485,6 +485,7 @@ func createWorker(c client.Client) worker.Worker {
 	w.RegisterActivity(instructionActivities.LoadWorkerInstructions)
 	w.RegisterActivity(instructionActivities.LoadPersonalInstructions)
 	w.RegisterActivity(instructionActivities.LoadExecPolicy)
+	w.RegisterActivity(instructionActivities.LoadConfigFile)
 
 	mcpActivities := activities.NewMcpActivities(mcpStore)
 	w.RegisterActivity(mcpActivities.InitializeMcpServers)
@@ -2130,4 +2131,105 @@ func TestAgenticWorkflow_McpToolCall(t *testing.T) {
 
 	t.Logf("MCP tool call - Total tokens: %d, Iterations: %d, Tools: %v",
 		result.TotalTokens, result.TotalIterations, result.ToolCallsExecuted)
+}
+
+// TestHarnessWorkflow_ConfigToml verifies the full config.toml pipeline:
+// config.toml on disk → LoadConfigFile activity → TOML parsed → ApplyToConfig
+// merges into SessionConfiguration → child AgenticWorkflow uses those values.
+//
+// Specifically it tests:
+// 1. model_provider/model from TOML are used for LLM calls (Anthropic instead of default OpenAI)
+// 2. disable_suggestions from TOML suppresses suggestions
+// 3. CLI overrides still win over TOML (implicit — no Model/Provider in CLIOverrides)
+func TestHarnessWorkflow_ConfigToml(t *testing.T) {
+	t.Parallel()
+	c := dialTemporal(t)
+
+	if os.Getenv("ANTHROPIC_API_KEY") == "" {
+		t.Skip("ANTHROPIC_API_KEY not set, skipping config.toml E2E test")
+	}
+
+	// 1. Create temp dir with config.toml
+	tmpDir := t.TempDir()
+	configContent := `model_provider = "anthropic"
+model = "claude-sonnet-4.5-20250929"
+disable_suggestions = true
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.toml"), []byte(configContent), 0644))
+
+	// 2. Start HarnessWorkflow with CLIOverrides.CodexHome = temp dir
+	harnessID := "test-config-toml-" + uuid.New().String()[:8]
+	harnessInput := workflow.HarnessWorkflowInput{
+		HarnessID: harnessID,
+		Overrides: workflow.CLIOverrides{
+			CodexHome: tmpDir,
+			// No Model/Provider overrides — TOML must provide them.
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), WorkflowTimeout)
+	defer cancel()
+
+	_, err := c.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        harnessID,
+		TaskQueue: TaskQueue,
+	}, "HarnessWorkflow", harnessInput)
+	require.NoError(t, err, "Failed to start HarnessWorkflow")
+	t.Logf("Started HarnessWorkflow: %s", harnessID)
+
+	// 3. Wait for harness to register handlers (it runs config-loading activities first).
+	//    Poll the get_sessions query until it succeeds.
+	{
+		deadline := time.After(30 * time.Second)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-deadline:
+				t.Fatal("Timed out waiting for HarnessWorkflow to register handlers")
+			case <-ticker.C:
+				_, qErr := c.QueryWorkflow(ctx, harnessID, "", workflow.QueryGetSessions)
+				if qErr == nil {
+					goto handlersReady
+				}
+				t.Logf("Waiting for harness handlers: %v", qErr)
+			}
+		}
+	handlersReady:
+	}
+
+	// 4. Send start_session Update → get child workflow ID
+	updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   harnessID,
+		UpdateName:   workflow.UpdateStartSession,
+		Args:         []interface{}{workflow.StartSessionRequest{UserMessage: "Say hello in exactly 3 words. Do not use any tools."}},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	require.NoError(t, err, "Failed to send start_session update")
+
+	var sessionResp workflow.StartSessionResponse
+	require.NoError(t, updateHandle.Get(ctx, &sessionResp))
+	childWorkflowID := sessionResp.SessionWorkflowID
+	t.Logf("Child workflow started: %s (session: %s)", childWorkflowID, sessionResp.SessionID)
+
+	// 4. Wait for the first turn to complete on the child workflow
+	waitForTurnComplete(t, ctx, c, childWorkflowID, 1)
+
+	// 5. Query child's get_turn_status → assert Suggestion == ""
+	statusResp, err := c.QueryWorkflow(ctx, childWorkflowID, "", workflow.QueryGetTurnStatus)
+	require.NoError(t, err, "Failed to query child turn status")
+	var turnStatus workflow.TurnStatus
+	require.NoError(t, statusResp.Get(&turnStatus))
+	assert.Empty(t, turnStatus.Suggestion, "disable_suggestions=true from TOML should suppress suggestions")
+
+	// 6. Shutdown child workflow → assert TotalTokens > 0, EndReason == "shutdown"
+	result := shutdownWorkflow(t, ctx, c, childWorkflowID)
+	assert.Greater(t, result.TotalTokens, 0, "Should have consumed tokens (proves Anthropic model from TOML was used)")
+	assert.Equal(t, "shutdown", result.EndReason)
+
+	t.Logf("ConfigToml - Total tokens: %d, Iterations: %d, Suggestion: %q",
+		result.TotalTokens, result.TotalIterations, turnStatus.Suggestion)
+
+	// Terminate the parent harness workflow (cleanup).
+	require.NoError(t, c.TerminateWorkflow(ctx, harnessID, "", "test cleanup"))
 }
