@@ -1,4 +1,5 @@
 import { test, expect } from "@microsoft/tui-test";
+import { unlinkSync } from "fs";
 import { tcxBinary, baseArgs, fullAutoArgs, EXPECT_TIMEOUT, selectNewSession } from "./helpers.js";
 
 // --- /exit command ---
@@ -177,6 +178,9 @@ test.describe("/init command", () => {
     await expect(
       terminal.getByText(/Created|already exists|Error creating/gi, { full: true, strict: false })
     ).toBeVisible({ timeout: EXPECT_TIMEOUT });
+
+    // Clean up the AGENTS.md file created by /init
+    try { unlinkSync("AGENTS.md"); } catch {}
   });
 });
 
