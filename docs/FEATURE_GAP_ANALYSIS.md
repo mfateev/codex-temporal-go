@@ -2,7 +2,7 @@
 
 Comprehensive comparison of all features between tcx (temporal-agent-harness, Go/Temporal) and Codex (codex-rs, Rust). Covers tools, LLM integration, configuration, security, MCP, memory, CLI/TUI, session management, auth, and infrastructure.
 
-**Last updated:** 2026-02-20
+**Last updated:** 2026-02-25
 
 ---
 
@@ -35,8 +35,8 @@ Comprehensive comparison of all features between tcx (temporal-agent-harness, Go
 | `view_image` | Injects base64 image into context | — | **Not Started** | No multimodal image input support |
 | `search_tool_bm25` | BM25 search over MCP tool registry | — | **Not Started** | No MCP tools → no tool search needed yet |
 | `js_repl` / `js_repl_reset` | Persistent Node.js kernel | — | **Not Started** | Experimental in Codex (feature-gated) |
-| MCP tool dispatch (`mcp__*`) | Full MCP client | — | **Not Started** | See §5 (MCP) |
-| MCP resource tools | `list_resources`, `read_resource`, etc. | — | **Not Started** | Depends on MCP client |
+| MCP tool dispatch (`mcp__*`) | Full MCP client | Yes (stdio + HTTP) | **Implemented** | PR #26 |
+| MCP resource tools | `list_resources`, `read_resource`, etc. | — | **Not Started** | Depends on MCP resource protocol |
 | Dynamic tools (`DynamicToolHandler`) | For apps/connectors | — | **Not Started** | Depends on apps/connectors |
 | `resume_agent` | Supported | Placeholder only | **Partial** | Spec exists but handler not implemented |
 
@@ -115,9 +115,9 @@ Comprehensive comparison of all features between tcx (temporal-agent-harness, Go
 | Configurable sandbox read access | Yes (`ReadOnlyAccess` enum) | No | **Not Started** | — |
 | Banned prefix suggestions (exec policy) | Yes | No | **Not Started** | — |
 | `codex execpolicy check` debug command | Yes | No | **Not Started** | — |
-| Permissions struct consolidation | Yes (upstream) | No | **Not Started** | High priority upstream change |
-| Git commands safe by default | Yes (upstream) | No | **Not Started** | High priority upstream change |
-| Empty command list validation | Yes (upstream) | No | **Not Started** | High priority upstream change |
+| Permissions struct consolidation | Yes (upstream) | Yes | **Implemented** | PR #32 |
+| Git commands safe by default | Yes (upstream) | Yes | **Implemented** | PR #29 |
+| Empty command list validation | Yes (upstream) | Yes | **Implemented** | PR #30 |
 | Structured network approvals | Yes (upstream) | No | **Not Started** | — |
 | Process hardening (seccomp capabilities) | Yes | No | **Not Started** | — |
 
@@ -127,11 +127,11 @@ Comprehensive comparison of all features between tcx (temporal-agent-harness, Go
 
 | Feature | Codex | tcx | Status | Gap Details |
 |---------|-------|-----|--------|-------------|
-| MCP client (stdio transport) | Yes | No | **Not Started** | Major gap — entire subsystem missing |
-| MCP client (HTTP transport) | Yes | No | **Not Started** | — |
-| MCP server config (`mcp_servers` map) | Yes (per-server enabled/required/timeout) | No | **Not Started** | — |
+| MCP client (stdio transport) | Yes | Yes | **Implemented** | PR #26 |
+| MCP client (HTTP transport) | Yes | Yes (streamable HTTP) | **Implemented** | PR #26 |
+| MCP server config (`mcp_servers` map) | Yes (per-server enabled/required/timeout) | Yes | **Implemented** | PR #26 |
 | MCP OAuth support | Yes (keyring/file credential store) | No | **Not Started** | — |
-| MCP tool namespacing (`mcp__server__tool`) | Yes | No | **Not Started** | — |
+| MCP tool namespacing (`mcp__server__tool`) | Yes | Yes | **Implemented** | PR #26 |
 | MCP resource protocol (list/read) | Yes | No | **Not Started** | — |
 | Codex as MCP server (`codex mcp-server`) | Yes | No | **Not Started** | — |
 | Apps/connectors MCP gateway | Yes | No | **Not Started** | — |
@@ -150,7 +150,7 @@ Comprehensive comparison of all features between tcx (temporal-agent-harness, Go
 | Session archive/unarchive | Yes | No | **Not Started** | — |
 | Thread naming (`/rename`) | Yes | No | **Not Started** | — |
 | Ephemeral mode (`--ephemeral`) | Yes | No | **Not Started** | — |
-| Memory v2 (extraction + consolidation) | Yes (28 commits, two-phase pipeline) | No | **Not Started** | Large effort; entirely new subsystem |
+| Memory v2 (extraction + consolidation) | Yes (28 commits, two-phase pipeline) | Yes | **Implemented** | PR #28 (Phase K) |
 | Shell snapshot (env capture/restore) | Yes (3-day retention) | No | **Not Started** | — |
 | Ghost commit / undo | Yes (`/undo`) | No | **Not Started** | — |
 | SQLite state DB | Experimental | No | **Not Started** | — |
@@ -184,7 +184,7 @@ Comprehensive comparison of all features between tcx (temporal-agent-harness, Go
 | `codex apply` (git apply latest diff) | Yes | No | **Not Started** | — |
 | `codex cloud` (cloud task browser) | Yes | No | **Not Started** | — |
 | Shell completion (bash/zsh/fish) | Yes | No | **Not Started** | — |
-| Rate limit display (TUI status bar) | Yes | No | **Not Started** | — |
+| Rate limit display (TUI status bar) | Yes | Partial (plumbing only) | **Partial** | PR #34; struct ready, nil until Go SDKs expose headers |
 | Alternate screen mode (auto/always/never) | Yes | No | **Not Started** | — |
 | Frame rate limiter | Yes | No | **Not Started** | — |
 | Status line config (`/statusline`) | Yes | No | **Not Started** | — |
@@ -203,8 +203,8 @@ Comprehensive comparison of all features between tcx (temporal-agent-harness, Go
 | Sub-agent concurrency cap | Yes (`agent_max_threads=6`) | No explicit cap | **Not Started** | Could spawn unlimited children |
 | Max thread spawn depth | Yes | Yes (`MaxThreadSpawnDepth=1`) | **Implemented** | — |
 | Collaboration modes (plan/default) | Yes (`/plan`, `/collab`) | Yes (planner role) | **Partial** | Less flexible; no runtime mode switching |
-| Rate limit tracking | Yes (per-session) | No | **Not Started** | — |
-| Token usage display | Yes (detailed breakdown) | Yes (basic total) | **Partial** | Missing cached tokens breakdown |
+| Rate limit tracking | Yes (per-session) | Partial (plumbing only) | **Partial** | PR #34; RateLimitSnapshot struct ready, unpopulated |
+| Token usage display | Yes (detailed breakdown) | Yes (per-turn + cumulative + ctx %) | **Implemented** | PR #34 (Phase L) |
 | Steer (mid-turn input) | Yes (Enter submits immediately) | No | **Not Started** | — |
 | Context manager normalization | Yes | No | **Not Started** | — |
 
@@ -249,16 +249,16 @@ These features exist in tcx but have no Codex equivalent. They represent advanta
 
 | Category | Implemented | Partial | Not Started | Not Needed | Temporal-Only |
 |----------|-------------|---------|-------------|------------|---------------|
-| Tools (§1) | 10 | 1 | 6 | 0 | 0 |
+| Tools (§1) | 11 | 1 | 5 | 0 | 0 |
 | LLM/Model (§2) | 9 | 1 | 8 | 0 | 3 |
 | Configuration (§3) | 1 | 2 | 13 | 0 | 0 |
-| Security (§4) | 8 | 0 | 12 | 0 | 0 |
-| MCP (§5) | 0 | 0 | 10 | 0 | 0 |
-| Memory (§6) | 1 | 0 | 7 | 1 | 0 |
-| CLI/TUI (§7) | 8 | 2 | 17 | 0 | 0 |
-| Session Mgmt (§8) | 5 | 3 | 4 | 0 | 0 |
+| Security (§4) | 11 | 0 | 9 | 0 | 0 |
+| MCP (§5) | 4 | 0 | 6 | 0 | 0 |
+| Memory (§6) | 2 | 0 | 6 | 1 | 0 |
+| CLI/TUI (§7) | 8 | 3 | 16 | 0 | 0 |
+| Session Mgmt (§8) | 6 | 2 | 3 | 0 | 0 |
 | Auth/Infra (§9) | 0 | 0 | 8 | 0 | 0 |
-| **Total** | **42** | **9** | **85** | **1** | **11+** |
+| **Total** | **52** | **9** | **74** | **1** | **11+** |
 
 ---
 
@@ -269,9 +269,9 @@ These features exist in tcx but have no Codex equivalent. They represent advanta
 | # | Gap | Effort | Rationale |
 |---|-----|--------|-----------|
 | 1 | **Streaming responses** | Large | Single biggest UX gap; users see nothing until full LLM response completes. Codex streams tokens incrementally. Requires rethinking activity pattern (possibly workflow-side SSE or chunked updates). |
-| 2 | **MCP client support** | Large | Entire ecosystem of third-party tools unavailable. Blocks IDE integration and tool extensibility. Requires stdio + HTTP transports, tool namespacing, server lifecycle management. |
+| 2 | ~~**MCP client support**~~ | ~~Large~~ | ✅ Done (PR #26). Stdio + HTTP transports, tool namespacing, server config. |
 | 3 | **Persistent config file** | Medium | Everything must be passed as CLI flags today. Need `config.toml` (or equivalent), profiles, and config layer stack for usability parity. |
-| 4 | **Memory v2 system** | Large | No cross-session learning. Codex's two-phase extraction + consolidation pipeline is a major productivity feature (28 upstream commits). Could implement a Temporal-native variant using workflow-based extraction. |
+| 4 | ~~**Memory v2 system**~~ | ~~Large~~ | ✅ Done (PR #28, Phase K). Two-phase extraction + consolidation, SQLite DB, disk materialization. |
 | 5 | **Slash commands** | Medium | Only ~4 vs Codex's ~30+. Missing `/diff`, `/review`, `/init`, `/rename`, `/fork`, `/plan`, `/collab`, `/mention`, `/personality`, `/mcp`, `/skills`, `/status`, `/debug-config`, `/ps`, `/clean`. |
 
 ### Tier 2 — Medium Impact (power users and completeness)
@@ -285,7 +285,7 @@ These features exist in tcx but have no Codex equivalent. They represent advanta
 | 10 | **Network proxy** | Medium | Can't control outbound network access granularly. Domain allow/deny lists for sandboxed processes. |
 | 11 | **Code review mode** | Medium | `codex review` has no equivalent. Separate model, structured findings output. |
 | 12 | **Reasoning controls** | Small | Missing `reasoning_summary` and `verbosity`. Quick config plumbing. |
-| 13 | **Upstream high-priority changes** | Small | Permissions struct consolidation, git-commands-safe, on-failure deprecation, empty command validation. All low effort individually. |
+| 13 | ~~**Upstream high-priority changes**~~ | ~~Small~~ | ✅ Done. Permissions (PR #32), git-safe (PR #29), on-failure deprecation (PR #31), empty cmd validation (PR #30). |
 | 14 | **Structured network approvals** | Medium | Recent upstream addition. Extends existing approval infrastructure. |
 | 15 | **Sub-agent concurrency cap** | Small | No `agent_max_threads` limit; could spawn unlimited children. |
 | 16 | **`@` file mentions** | Medium | Fuzzy file search for attaching context to prompts. |
