@@ -258,6 +258,29 @@ func (s *SessionState) registerHandlers(ctx workflow.Context, ctrl *LoopControl)
 		logger.Error("Failed to register update_model update handler", "error", err)
 	}
 
+	// Update: update_personality
+	// Allows the CLI to set a communication style personality.
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdatePersonality,
+		func(ctx workflow.Context, req UpdatePersonalityRequest) (UpdatePersonalityResponse, error) {
+			s.Config.Personality = req.Personality
+			s.rebuildInstructions()
+			return UpdatePersonalityResponse{Acknowledged: true}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, req UpdatePersonalityRequest) error {
+				if ctrl.IsShutdown() {
+					return fmt.Errorf("session is shutting down")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register update_personality update handler", "error", err)
+	}
+
 	// Update: update_approval_mode
 	// Allows the CLI to change the approval mode mid-session.
 	err = workflow.SetUpdateHandlerWithOptions(

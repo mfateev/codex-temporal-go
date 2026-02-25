@@ -82,6 +82,10 @@ const (
 	// UpdateApprovalMode changes the session's approval mode mid-session.
 	// Used by the CLI /approvals command.
 	UpdateApprovalMode = "update_approval_mode"
+
+	// UpdatePersonality changes the session's personality/communication style.
+	// Used by the CLI /personality command.
+	UpdatePersonality = "update_personality"
 )
 
 // UpdateModelRequest is the payload for the update_model Update.
@@ -136,6 +140,16 @@ type UpdateApprovalModeRequest struct {
 
 // UpdateApprovalModeResponse is returned by the update_approval_mode Update.
 type UpdateApprovalModeResponse struct {
+	Acknowledged bool `json:"acknowledged"`
+}
+
+// UpdatePersonalityRequest is the payload for the update_personality Update.
+type UpdatePersonalityRequest struct {
+	Personality string `json:"personality"`
+}
+
+// UpdatePersonalityResponse is returned by the update_personality Update.
+type UpdatePersonalityResponse struct {
 	Acknowledged bool `json:"acknowledged"`
 }
 

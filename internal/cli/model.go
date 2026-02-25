@@ -485,6 +485,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DiffResultMsg:
 		m.appendToViewport(msg.Output + "\n")
 
+	case PersonalityUpdateSentMsg:
+		if msg.Personality == "" {
+			m.appendToViewport(m.renderer.RenderSystemMessage("Personality cleared."))
+		} else {
+			m.appendToViewport(m.renderer.RenderSystemMessage(
+				fmt.Sprintf("Personality set to: %s", msg.Personality)))
+		}
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case PersonalityUpdateErrorMsg:
+		m.appendToViewport(fmt.Sprintf("Error updating personality: %v\n", msg.Err))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
 	case ApprovalModeUpdateSentMsg:
 		m.appendToViewport(m.renderer.RenderSystemMessage(
 			fmt.Sprintf("Approval mode updated to %s.", msg.Mode)))
@@ -1005,6 +1020,24 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StateWatching
 			m.textarea.Blur()
 			return m, cleanExecSessionsCmd(m.client, m.workflowID)
+		}
+		if strings.HasPrefix(line, "/personality") {
+			if m.workflowID == "" {
+				m.appendToViewport("No active session.\n")
+				return m, nil
+			}
+			personality := strings.TrimSpace(strings.TrimPrefix(line, "/personality"))
+			if personality == "" {
+				// Clear personality
+				m.spinnerMsg = "Clearing personality..."
+				m.state = StateWatching
+				m.textarea.Blur()
+				return m, sendUpdatePersonalityCmd(m.client, m.workflowID, "")
+			}
+			m.spinnerMsg = "Setting personality..."
+			m.state = StateWatching
+			m.textarea.Blur()
+			return m, sendUpdatePersonalityCmd(m.client, m.workflowID, personality)
 		}
 		if line == "/approvals" {
 			if m.workflowID == "" {

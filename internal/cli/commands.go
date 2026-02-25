@@ -350,6 +350,31 @@ func sendUpdateModelCmd(c client.Client, workflowID, provider, model string) tea
 	}
 }
 
+// sendUpdatePersonalityCmd sends an update_personality Update to the workflow.
+func sendUpdatePersonalityCmd(c client.Client, workflowID, personality string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID:   workflowID,
+			UpdateName:   workflow.UpdatePersonality,
+			Args:         []interface{}{workflow.UpdatePersonalityRequest{Personality: personality}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return PersonalityUpdateErrorMsg{Err: err}
+		}
+
+		var resp workflow.UpdatePersonalityResponse
+		if err := updateHandle.Get(ctx, &resp); err != nil {
+			return PersonalityUpdateErrorMsg{Err: err}
+		}
+
+		return PersonalityUpdateSentMsg{Personality: personality}
+	}
+}
+
 // sendUpdateApprovalModeCmd sends an update_approval_mode Update to the workflow.
 func sendUpdateApprovalModeCmd(c client.Client, workflowID, mode string) tea.Cmd {
 	return func() tea.Msg {

@@ -856,6 +856,43 @@ func TestModel_TurnCompleteNoSuggestionPollWhenDisabled(t *testing.T) {
 	assert.Equal(t, "", m.suggestion)
 }
 
+// --- /personality command tests ---
+
+func TestModel_PersonalityCommand_NoSession(t *testing.T) {
+	m := newTestModel()
+	m.workflowID = ""
+
+	m.textarea.SetValue("/personality concise")
+	result, _ := m.handleInputKey(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(*Model)
+	assert.Equal(t, StateInput, rm.state)
+	assert.Contains(t, rm.viewportContent, "No active session")
+}
+
+func TestModel_PersonalityCommand_SetStyle(t *testing.T) {
+	m := newTestModel()
+	m.workflowID = "test-wf"
+
+	m.textarea.SetValue("/personality concise and friendly")
+	result, cmd := m.handleInputKey(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(*Model)
+	assert.Equal(t, StateWatching, rm.state)
+	assert.Equal(t, "Setting personality...", rm.spinnerMsg)
+	assert.NotNil(t, cmd)
+}
+
+func TestModel_PersonalityCommand_Clear(t *testing.T) {
+	m := newTestModel()
+	m.workflowID = "test-wf"
+
+	m.textarea.SetValue("/personality")
+	result, cmd := m.handleInputKey(tea.KeyMsg{Type: tea.KeyEnter})
+	rm := result.(*Model)
+	assert.Equal(t, StateWatching, rm.state)
+	assert.Equal(t, "Clearing personality...", rm.spinnerMsg)
+	assert.NotNil(t, cmd)
+}
+
 // --- /approvals command tests ---
 
 func TestModel_ApprovalsCommand_NoSession(t *testing.T) {

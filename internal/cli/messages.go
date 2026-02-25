@@ -173,6 +173,16 @@ type ApprovalModeUpdateErrorMsg struct {
 	Err error
 }
 
+// PersonalityUpdateSentMsg is sent after a personality update succeeds.
+type PersonalityUpdateSentMsg struct {
+	Personality string
+}
+
+// PersonalityUpdateErrorMsg is sent when a personality update fails.
+type PersonalityUpdateErrorMsg struct {
+	Err error
+}
+
 // McpToolsResultMsg is sent when the MCP tools query completes.
 type McpToolsResultMsg struct {
 	Tools []workflow.McpToolSummary
