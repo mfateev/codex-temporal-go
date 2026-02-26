@@ -196,6 +196,10 @@ type SessionConfiguration struct {
 	MemoryConfig  MemoriesConfig `json:"memory_config,omitempty"`
 	MemoryDbPath  string         `json:"memory_db_path,omitempty"` // SQLite DB path (default: codex_home/state.sqlite)
 	MemoryRoot    string         `json:"memory_root,omitempty"`    // Memory folder root (default: codex_home/memories)
+
+	// Skills configuration.
+	// Maps to: codex-rs SkillsConfig
+	DisabledSkills []string `json:"disabled_skills,omitempty"` // Skill paths that are toggled off
 }
 
 // DefaultSessionConfiguration returns sensible defaults.

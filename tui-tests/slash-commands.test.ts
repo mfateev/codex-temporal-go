@@ -105,7 +105,7 @@ test.describe("/diff command", () => {
       file: tcxBinary,
       args: [...baseArgs, "--full-auto", "--model", "gpt-4o-mini"],
     },
-    rows: 30,
+    rows: 80,
     columns: 120,
   });
 
@@ -118,9 +118,10 @@ test.describe("/diff command", () => {
 
     terminal.submit("/diff");
 
-    // Should show "No changes" or diff output
+    // Should show "No changes detected." or "Not in a git repository." or
+    // actual diff output. Use broad match since diff output scrolls in the viewport.
     await expect(
-      terminal.getByText(/No changes|diff/gi, { full: true, strict: false })
+      terminal.getByText(/No changes detected|Not in a git repository|diff --git|@@/gi, { full: true, strict: false })
     ).toBeVisible({ timeout: EXPECT_TIMEOUT });
   });
 });
@@ -512,6 +513,35 @@ test.describe("/resume command", () => {
     // (with workflow IDs and status like "running") or "No running sessions found."
     await expect(
       terminal.getByText(/Fetching sessions|No running sessions|running/gi, { full: true, strict: false })
+    ).toBeVisible({ timeout: EXPECT_TIMEOUT });
+  });
+});
+
+// --- /skills command ---
+test.describe("/skills command", () => {
+  test.use({
+    program: {
+      file: tcxBinary,
+      args: [...fullAutoArgs, "-m", "Say exactly: canary7790"],
+    },
+    rows: 30,
+    columns: 120,
+  });
+
+  test("/skills shows skills list or no-skills message", async ({ terminal }) => {
+    await expect(
+      terminal.getByText(/canary7790/gi, { full: true, strict: false })
+    ).toBeVisible({ timeout: EXPECT_TIMEOUT });
+
+    await expect(
+      terminal.getByText(/ready/g, { full: true, strict: false })
+    ).toBeVisible({ timeout: EXPECT_TIMEOUT });
+
+    terminal.submit("/skills");
+
+    // Shows "Fetching skills..." spinner, then either skill list or "No skills found."
+    await expect(
+      terminal.getByText(/No skills found|Skills:/gi, { full: true, strict: false })
     ).toBeVisible({ timeout: EXPECT_TIMEOUT });
   });
 });
