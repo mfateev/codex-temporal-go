@@ -9,7 +9,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	enums "go.temporal.io/api/enums/v1"
-	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
 	"github.com/mfateev/temporal-agent-harness/internal/llm"
@@ -568,63 +567,35 @@ func fetchModelsCmd() tea.Cmd {
 	}
 }
 
-// fetchSessionsCmd lists recent AgenticWorkflow executions belonging to this
-// harness via the Temporal visibility API and returns a HarnessSessionsListMsg.
-//
-// TODO: Add a custom search attribute (e.g. "HarnessID") so sessions can be
-// filtered by workspace without relying on WorkflowId prefix syntax.
-// This would also allow filtering sessions belonging to the current user
-// across workspaces (multi-user/multi-tenant scenarios).
+// fetchSessionsCmd queries the harness workflow's session registry and returns
+// a HarnessSessionsListMsg. If the harness is not running, returns an empty list.
 func fetchSessionsCmd(c client.Client, harnessID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		query := fmt.Sprintf(
-			`WorkflowType = 'AgenticWorkflow' AND WorkflowId STARTS_WITH '%s/' AND ExecutionStatus = 'Running'`,
-			harnessID,
-		)
-		resp, err := c.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
-			Query:    query,
-			PageSize: 10,
-		})
+		resp, err := c.QueryWorkflow(ctx, harnessID, "", workflow.QueryGetSessions)
 		if err != nil {
-			return HarnessSessionsListMsg{Err: err}
+			// Harness not running or query failed — return empty list.
+			return HarnessSessionsListMsg{Entries: nil}
+		}
+
+		var sessions []workflow.SessionEntry
+		if err := resp.Get(&sessions); err != nil {
+			return HarnessSessionsListMsg{Entries: nil}
 		}
 
 		var entries []SessionListEntry
-		for _, exec := range resp.GetExecutions() {
-			if exec.GetExecution() == nil {
-				continue
-			}
+		for _, s := range sessions {
 			entries = append(entries, SessionListEntry{
-				WorkflowID: exec.GetExecution().GetWorkflowId(),
-				StartTime:  exec.GetStartTime().AsTime(),
-				Status:     mapWorkflowStatus(exec.GetStatus()),
+				WorkflowID: s.WorkflowID,
+				StartTime:  s.StartedAt,
+				Status:     string(s.Status),
+				Name:       s.Name,
+				Model:      s.Model,
 			})
 		}
 		return HarnessSessionsListMsg{Entries: entries}
-	}
-}
-
-// mapWorkflowStatus converts a Temporal WorkflowExecutionStatus enum to a
-// human-readable string for display in the session picker.
-func mapWorkflowStatus(status enums.WorkflowExecutionStatus) string {
-	switch status {
-	case enums.WORKFLOW_EXECUTION_STATUS_RUNNING:
-		return "running"
-	case enums.WORKFLOW_EXECUTION_STATUS_COMPLETED:
-		return "completed"
-	case enums.WORKFLOW_EXECUTION_STATUS_FAILED:
-		return "failed"
-	case enums.WORKFLOW_EXECUTION_STATUS_CANCELED:
-		return "canceled"
-	case enums.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
-		return "timed_out"
-	case enums.WORKFLOW_EXECUTION_STATUS_TERMINATED:
-		return "terminated"
-	default:
-		return "unknown"
 	}
 }
 

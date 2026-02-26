@@ -10,31 +10,13 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/mfateev/temporal-agent-harness/internal/activities"
 )
 
-// Stub activity functions for the harness test environment.
-// These are never called directly — OnActivity mocks override them —
-// but they must be registered so the test env recognises the activity names.
-// The function names must match the string names used in workflow.ExecuteActivity calls.
-
-func LoadWorkerInstructions(_ context.Context, _ activities.LoadWorkerInstructionsInput) (activities.LoadWorkerInstructionsOutput, error) {
-	panic("stub: should be mocked")
-}
-
-func LoadExecPolicy(_ context.Context, _ activities.LoadExecPolicyInput) (activities.LoadExecPolicyOutput, error) {
-	panic("stub: should be mocked")
-}
-
-func LoadPersonalInstructions(_ context.Context, _ activities.LoadPersonalInstructionsInput) (activities.LoadPersonalInstructionsOutput, error) {
-	panic("stub: should be mocked")
-}
-
-func LoadConfigFile(_ context.Context, _ activities.LoadConfigFileInput) (activities.LoadConfigFileOutput, error) {
+// Stub activity function for the WaitForSessionReady activity.
+func WaitForSessionReady(_ context.Context, _ activities.WaitForSessionReadyInput) (activities.WaitForSessionReadyOutput, error) {
 	panic("stub: should be mocked")
 }
 
@@ -52,32 +34,22 @@ func TestHarnessWorkflowSuite(t *testing.T) {
 func (s *HarnessWorkflowTestSuite) SetupTest() {
 	s.env = s.NewTestWorkflowEnvironment()
 
-	// Register stub activity functions so the test env recognises the activity names.
-	s.env.RegisterActivity(LoadWorkerInstructions)
-	s.env.RegisterActivity(LoadExecPolicy)
-	s.env.RegisterActivity(LoadPersonalInstructions)
-	s.env.RegisterActivity(LoadConfigFile)
+	// Register stub activity for WaitForSessionReady.
+	s.env.RegisterActivity(WaitForSessionReady)
 
-	// Default mock for LoadWorkerInstructions — returns empty docs.
-	s.env.OnActivity("LoadWorkerInstructions", mock.Anything, mock.Anything).
-		Return(activities.LoadWorkerInstructionsOutput{}, nil).Maybe()
+	// Default mock for WaitForSessionReady — returns a predictable agent workflow ID.
+	s.env.OnActivity("WaitForSessionReady", mock.Anything, mock.Anything).
+		Return(func(_ context.Context, input activities.WaitForSessionReadyInput) (activities.WaitForSessionReadyOutput, error) {
+			// Derive the agent workflow ID by convention.
+			return activities.WaitForSessionReadyOutput{
+				AgentWorkflowID: input.SessionWorkflowID + "/main",
+			}, nil
+		}).Maybe()
 
-	// Default mock for LoadExecPolicy — returns empty rules.
-	s.env.OnActivity("LoadExecPolicy", mock.Anything, mock.Anything).
-		Return(activities.LoadExecPolicyOutput{}, nil).Maybe()
-
-	// Default mock for LoadPersonalInstructions — returns empty instructions.
-	s.env.OnActivity("LoadPersonalInstructions", mock.Anything, mock.Anything).
-		Return(activities.LoadPersonalInstructionsOutput{}, nil).Maybe()
-
-	// Default mock for LoadConfigFile — returns empty TOML.
-	s.env.OnActivity("LoadConfigFile", mock.Anything, mock.Anything).
-		Return(activities.LoadConfigFileOutput{}, nil).Maybe()
-
-	// Register AgenticWorkflow as a child workflow that completes immediately.
-	s.env.RegisterWorkflow(AgenticWorkflow)
-	s.env.OnWorkflow(AgenticWorkflow, mock.Anything, mock.Anything).
-		Return(WorkflowResult{}, nil).Maybe()
+	// Register SessionWorkflow as a child workflow that completes immediately.
+	s.env.RegisterWorkflow(SessionWorkflow)
+	s.env.OnWorkflow(SessionWorkflow, mock.Anything, mock.Anything).
+		Return(nil).Maybe()
 }
 
 func (s *HarnessWorkflowTestSuite) AfterTest(suiteName, testName string) {
@@ -92,9 +64,7 @@ func harnessInput() HarnessWorkflowInput {
 }
 
 // cancelWorkflow cancels the workflow via a delayed callback to terminate the
-// harness's infinite loop. The harness loops until either cancelled or a
-// ContinueAsNew timeout fires; cancellation is the simplest way to stop it
-// in tests.
+// harness's infinite loop.
 func (s *HarnessWorkflowTestSuite) cancelWorkflow(delay time.Duration) {
 	s.env.RegisterDelayedCallback(func() {
 		s.env.CancelWorkflow()
@@ -102,19 +72,19 @@ func (s *HarnessWorkflowTestSuite) cancelWorkflow(delay time.Duration) {
 }
 
 // assertWorkflowCompleted verifies the workflow completed (regardless of reason).
-// The harness's infinite loop may complete via cancellation or idle timeout.
 func (s *HarnessWorkflowTestSuite) assertWorkflowCompleted() {
 	require.True(s.T(), s.env.IsWorkflowCompleted(),
 		"harness workflow should have completed")
 }
 
 // TestHarness_StartSessionSpawnsChild verifies that sending a start_session
-// Update spawns a child workflow and returns a non-empty SessionWorkflowID.
-// It also queries get_sessions to confirm the session is recorded.
+// Update spawns a SessionWorkflow child and returns a non-empty SessionWorkflowID
+// (the AgenticWorkflow ID). It also queries get_sessions to confirm the session
+// is recorded.
 func (s *HarnessWorkflowTestSuite) TestHarness_StartSessionSpawnsChild() {
 	var sessionWorkflowID string
 
-	// After activities resolve (~1s), send a start_session Update.
+	// After a brief delay, send a start_session Update.
 	s.env.RegisterDelayedCallback(func() {
 		s.env.UpdateWorkflow(UpdateStartSession, "start-1", &testsuite.TestUpdateCallback{
 			OnAccept: func() {},
@@ -211,31 +181,16 @@ func (s *HarnessWorkflowTestSuite) TestHarness_StartSession_EmptyMessageRejected
 	assert.True(s.T(), rejected, "empty user_message Update should have been rejected")
 }
 
-// TestHarness_ActivityCallsOnStart verifies that all three config-loading
-// activities are called exactly once when the harness starts.
-// LoadExecPolicy is only called when CodexHome is non-empty; with default
-// (empty) overrides it is skipped entirely.
-func (s *HarnessWorkflowTestSuite) TestHarness_ActivityCallsOnStart() {
-	// Track activity invocations by name using the started listener.
-	callCounts := map[string]int{}
-	s.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
-		callCounts[info.ActivityType.Name]++
-	})
-
+// TestHarness_NoConfigActivitiesOnStart verifies that the slimmed harness does
+// NOT call any config-loading activities directly. Config resolution is now
+// handled by SessionWorkflow.
+func (s *HarnessWorkflowTestSuite) TestHarness_NoConfigActivitiesOnStart() {
 	// Cancel the workflow to terminate the harness's idle loop.
 	s.cancelWorkflow(time.Second * 2)
 
 	s.env.ExecuteWorkflow(HarnessWorkflow, harnessInput())
 
 	require.True(s.T(), s.env.IsWorkflowCompleted())
-
-	assert.Equal(s.T(), 1, callCounts["LoadWorkerInstructions"],
-		"LoadWorkerInstructions should be called exactly once on start")
-	assert.Equal(s.T(), 1, callCounts["LoadPersonalInstructions"],
-		"LoadPersonalInstructions should be called exactly once on start")
-	assert.Equal(s.T(), 1, callCounts["LoadConfigFile"],
-		"LoadConfigFile should be called exactly once on start")
-	// LoadExecPolicy is skipped when CodexHome is empty (the default).
-	assert.Equal(s.T(), 0, callCounts["LoadExecPolicy"],
-		"LoadExecPolicy should not be called when CodexHome is empty")
+	// The harness should NOT call any config-loading activities.
+	// The only activities it calls are WaitForSessionReady (when starting a session).
 }

@@ -238,10 +238,12 @@ type HarnessSessionsErrorMsg struct {
 type SessionListEntry struct {
 	WorkflowID string
 	StartTime  time.Time
-	Status     string // "running", "completed", "failed", "canceled", "timed_out"
+	Status     string // "running", "completed", "errored", etc.
+	Name       string // User-assigned session name (from /rename)
+	Model      string // Model identifier
 }
 
-// HarnessSessionsListMsg is sent when the session list fetch (via Temporal ListWorkflow) completes.
+// HarnessSessionsListMsg is sent when the session list fetch completes.
 type HarnessSessionsListMsg struct {
 	Entries []SessionListEntry
 	Err     error
