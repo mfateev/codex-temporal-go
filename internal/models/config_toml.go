@@ -20,6 +20,7 @@ type ConfigToml struct {
 	DisableSuggestions         *bool                          `toml:"disable_suggestions"`
 	McpServers                 map[string]McpServerConfigToml `toml:"mcp_servers"`
 	Memory                     *MemoryToml                    `toml:"memory"`
+	DisabledSkills             []string                       `toml:"disabled_skills"`
 }
 
 // SandboxWorkspaceWriteToml configures workspace-write sandbox settings.
@@ -100,6 +101,9 @@ func (c *ConfigToml) ApplyToConfig(cfg *SessionConfiguration) {
 		for name, srv := range c.McpServers {
 			cfg.McpServers[name] = srv.toMcpServerConfig()
 		}
+	}
+	if len(c.DisabledSkills) > 0 {
+		cfg.DisabledSkills = c.DisabledSkills
 	}
 	if c.Memory != nil {
 		if c.Memory.Enabled != nil {

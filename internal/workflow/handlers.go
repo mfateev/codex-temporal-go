@@ -14,6 +14,7 @@ import (
 
 	"github.com/mfateev/temporal-agent-harness/internal/activities"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/skills"
 	"github.com/mfateev/temporal-agent-harness/internal/version"
 )
 
@@ -124,6 +125,9 @@ func (s *SessionState) registerHandlers(ctx workflow.Context, ctrl *LoopControl)
 				return StateUpdateResponse{}, fmt.Errorf("failed to add user message: %w", err)
 			}
 			ctrl.NotifyItemAdded()
+
+			// Inject skill content for any $skill-name mentions
+			s.injectSkillMentions(ctx, input.Content, turnID)
 
 			ctrl.SetPendingUserInput(turnID)
 
@@ -279,6 +283,58 @@ func (s *SessionState) registerHandlers(ctx workflow.Context, ctrl *LoopControl)
 	)
 	if err != nil {
 		logger.Error("Failed to register update_personality update handler", "error", err)
+	}
+
+	// Query: list_skills
+	// Returns the list of discovered skills with their enabled/disabled status.
+	err = workflow.SetQueryHandler(ctx, QueryListSkills, func() ([]skills.SkillMetadata, error) {
+		return s.LoadedSkills, nil
+	})
+	if err != nil {
+		logger.Error("Failed to register list_skills query handler", "error", err)
+	}
+
+	// Update: toggle_skill
+	// Enables or disables a specific skill by updating the DisabledSkills list.
+	err = workflow.SetUpdateHandlerWithOptions(
+		ctx,
+		UpdateToggleSkill,
+		func(ctx workflow.Context, req ToggleSkillRequest) (ToggleSkillResponse, error) {
+			if req.Enabled {
+				// Remove from disabled list
+				var filtered []string
+				for _, p := range s.Config.DisabledSkills {
+					if p != req.SkillPath {
+						filtered = append(filtered, p)
+					}
+				}
+				s.Config.DisabledSkills = filtered
+			} else {
+				// Add to disabled list (if not already there)
+				found := false
+				for _, p := range s.Config.DisabledSkills {
+					if p == req.SkillPath {
+						found = true
+						break
+					}
+				}
+				if !found {
+					s.Config.DisabledSkills = append(s.Config.DisabledSkills, req.SkillPath)
+				}
+			}
+			return ToggleSkillResponse{Acknowledged: true}, nil
+		},
+		workflow.UpdateHandlerOptions{
+			Validator: func(ctx workflow.Context, req ToggleSkillRequest) error {
+				if ctrl.IsShutdown() {
+					return fmt.Errorf("session is shutting down")
+				}
+				return nil
+			},
+		},
+	)
+	if err != nil {
+		logger.Error("Failed to register toggle_skill update handler", "error", err)
 	}
 
 	// Update: update_approval_mode

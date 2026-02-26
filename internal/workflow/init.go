@@ -17,6 +17,7 @@ import (
 	"github.com/mfateev/temporal-agent-harness/internal/instructions"
 	"github.com/mfateev/temporal-agent-harness/internal/memories"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/skills"
 )
 
 // resolveProfile resolves the model profile from the registry.
@@ -262,6 +263,87 @@ func (s *SessionState) loadMemorySummary(ctx workflow.Context) {
 
 	logger.Info("Memory summary injected into developer instructions",
 		"summary_len", len(result.Summary))
+}
+
+// loadSkills discovers available skills from the worker filesystem.
+// Called at session start. Non-fatal: falls back to empty list on failure.
+func (s *SessionState) loadSkills(ctx workflow.Context) {
+	logger := workflow.GetLogger(ctx)
+
+	actOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 2,
+		},
+	}
+	if s.Config.SessionTaskQueue != "" {
+		actOpts.TaskQueue = s.Config.SessionTaskQueue
+	}
+	loadCtx := workflow.WithActivityOptions(ctx, actOpts)
+
+	var result activities.LoadSkillsOutput
+	err := workflow.ExecuteActivity(loadCtx, "LoadSkills", activities.LoadSkillsInput{
+		CodexHome: s.Config.CodexHome,
+		Cwd:       s.Config.Cwd,
+	}).Get(ctx, &result)
+	if err != nil {
+		logger.Warn("Failed to load skills", "error", err)
+		return
+	}
+
+	s.LoadedSkills = result.Skills
+	logger.Info("Skills loaded", "count", len(s.LoadedSkills))
+}
+
+// injectSkillMentions parses $skill-name mentions from user input,
+// loads skill content via activity, and injects as conversation items.
+// Non-fatal: failures are logged and skipped.
+func (s *SessionState) injectSkillMentions(ctx workflow.Context, userInput, turnID string) {
+	if len(s.LoadedSkills) == 0 {
+		return
+	}
+
+	mentions := skills.ParseMentions(userInput)
+	resolved := skills.ResolveMentions(mentions, s.LoadedSkills, s.Config.DisabledSkills)
+	if len(resolved) == 0 {
+		return
+	}
+
+	logger := workflow.GetLogger(ctx)
+	actOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 15 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 2,
+		},
+	}
+	if s.Config.SessionTaskQueue != "" {
+		actOpts.TaskQueue = s.Config.SessionTaskQueue
+	}
+	readCtx := workflow.WithActivityOptions(ctx, actOpts)
+
+	for _, skill := range resolved {
+		var result activities.ReadSkillContentOutput
+		err := workflow.ExecuteActivity(readCtx, "ReadSkillContent", activities.ReadSkillContentInput{
+			Path: skill.Path,
+		}).Get(ctx, &result)
+		if err != nil {
+			logger.Warn("Failed to read skill content", "skill", skill.Name, "error", err)
+			continue
+		}
+
+		if result.Content == "" {
+			continue
+		}
+
+		// Inject as user message with skill_instructions XML wrapper
+		content := fmt.Sprintf("<skill_instructions name=%q>\n%s\n</skill_instructions>", skill.Name, result.Content)
+		_ = s.History.AddItem(models.ConversationItem{
+			Type:    models.ItemTypeUserMessage,
+			Content: content,
+			TurnID:  turnID,
+		})
+		logger.Info("Injected skill content", "skill", skill.Name)
+	}
 }
 
 // extractMemoryOnShutdown runs phase-1 memory extraction and signals the

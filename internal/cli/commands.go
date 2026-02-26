@@ -14,6 +14,7 @@ import (
 
 	"github.com/mfateev/temporal-agent-harness/internal/llm"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/skills"
 	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
@@ -640,5 +641,50 @@ func waitForCompletionCmd(c client.Client, workflowID string) tea.Cmd {
 		}
 
 		return SessionCompletedMsg{Result: &result}
+	}
+}
+
+// querySkillsCmd queries the workflow for the list of discovered skills.
+func querySkillsCmd(c client.Client, workflowID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		resp, err := c.QueryWorkflow(ctx, workflowID, "", workflow.QueryListSkills)
+		if err != nil {
+			return SkillsListErrorMsg{Err: err}
+		}
+
+		var skillsList []skills.SkillMetadata
+		if err := resp.Get(&skillsList); err != nil {
+			return SkillsListErrorMsg{Err: err}
+		}
+
+		return SkillsListResultMsg{Skills: skillsList}
+	}
+}
+
+// sendToggleSkillCmd sends a toggle_skill Update to the workflow.
+func sendToggleSkillCmd(c client.Client, workflowID, skillPath string, enabled bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID:   workflowID,
+			UpdateName:   workflow.UpdateToggleSkill,
+			Args:         []interface{}{workflow.ToggleSkillRequest{SkillPath: skillPath, Enabled: enabled}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return SkillToggleErrorMsg{Err: err}
+		}
+
+		var resp workflow.ToggleSkillResponse
+		if err := updateHandle.Get(ctx, &resp); err != nil {
+			return SkillToggleErrorMsg{Err: err}
+		}
+
+		return SkillToggleSentMsg{SkillPath: skillPath, Enabled: enabled}
 	}
 }

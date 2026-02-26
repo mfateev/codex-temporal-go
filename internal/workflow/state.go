@@ -10,6 +10,7 @@ import (
 
 	"github.com/mfateev/temporal-agent-harness/internal/history"
 	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/skills"
 	"github.com/mfateev/temporal-agent-harness/internal/tools"
 )
 
@@ -86,6 +87,14 @@ const (
 	// UpdatePersonality changes the session's personality/communication style.
 	// Used by the CLI /personality command.
 	UpdatePersonality = "update_personality"
+
+	// QueryListSkills returns the list of discovered skills.
+	// Used by the CLI /skills command.
+	QueryListSkills = "list_skills"
+
+	// UpdateToggleSkill enables or disables a specific skill.
+	// Used by the CLI /skills toggle command.
+	UpdateToggleSkill = "toggle_skill"
 )
 
 // UpdateModelRequest is the payload for the update_model Update.
@@ -150,6 +159,17 @@ type UpdatePersonalityRequest struct {
 
 // UpdatePersonalityResponse is returned by the update_personality Update.
 type UpdatePersonalityResponse struct {
+	Acknowledged bool `json:"acknowledged"`
+}
+
+// ToggleSkillRequest is the payload for the toggle_skill Update.
+type ToggleSkillRequest struct {
+	SkillPath string `json:"skill_path"`
+	Enabled   bool   `json:"enabled"`
+}
+
+// ToggleSkillResponse is returned by the toggle_skill Update.
+type ToggleSkillResponse struct {
 	Acknowledged bool `json:"acknowledged"`
 }
 
@@ -435,6 +455,10 @@ type SessionState struct {
 	// Subagent control — manages child workflow lifecycles.
 	// Maps to: codex-rs/core/src/agent/control.rs AgentControl
 	AgentCtl *AgentControl `json:"agent_ctl,omitempty"`
+
+	// Discovered skills metadata (loaded at session start, persists across CAN).
+	// Maps to: codex-rs/core/src/skills/manager.rs SkillsManager
+	LoadedSkills []skills.SkillMetadata `json:"loaded_skills,omitempty"`
 }
 
 // PlanStepStatus indicates the status of a single step in a plan.

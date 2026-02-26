@@ -100,6 +100,8 @@ func main() {
 	w.RegisterActivity(instructionActivities.LoadPersonalInstructions)
 	w.RegisterActivity(instructionActivities.LoadExecPolicy)
 	w.RegisterActivity(instructionActivities.LoadConfigFile)
+	w.RegisterActivity(instructionActivities.LoadSkills)
+	w.RegisterActivity(instructionActivities.ReadSkillContent)
 
 	mcpActivities := activities.NewMcpActivities(mcpStore)
 	w.RegisterActivity(mcpActivities.InitializeMcpServers)

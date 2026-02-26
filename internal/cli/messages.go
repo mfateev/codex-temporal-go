@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/skills"
 	"github.com/mfateev/temporal-agent-harness/internal/workflow"
 )
 
@@ -244,4 +245,25 @@ type SessionListEntry struct {
 type HarnessSessionsListMsg struct {
 	Entries []SessionListEntry
 	Err     error
+}
+
+// SkillsListResultMsg is sent when the skills list query completes.
+type SkillsListResultMsg struct {
+	Skills []skills.SkillMetadata
+}
+
+// SkillsListErrorMsg is sent when the skills list query fails.
+type SkillsListErrorMsg struct {
+	Err error
+}
+
+// SkillToggleSentMsg is sent after a skill toggle update succeeds.
+type SkillToggleSentMsg struct {
+	SkillPath string
+	Enabled   bool
+}
+
+// SkillToggleErrorMsg is sent when a skill toggle update fails.
+type SkillToggleErrorMsg struct {
+	Err error
 }

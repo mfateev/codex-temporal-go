@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/client"
 
 	"github.com/mfateev/temporal-agent-harness/internal/models"
+	"github.com/mfateev/temporal-agent-harness/internal/skills"
 	"github.com/mfateev/temporal-agent-harness/internal/temporalclient"
 	"github.com/mfateev/temporal-agent-harness/internal/version"
 	"github.com/mfateev/temporal-agent-harness/internal/workflow"
@@ -214,6 +215,12 @@ type Model struct {
 
 	// /approvals command state
 	selectingApprovalMode bool
+
+	// /skills command state
+	skillsToggleMode bool
+	selectingSkill   bool
+	skillsList       []skills.SkillMetadata
+	disabledSkills   []string
 
 	// Harness workflow ID (derived from cwd, used by /new and /resume)
 	harnessID string
@@ -630,6 +637,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendToViewport(fmt.Sprintf("Error cleaning exec sessions: %v\n", msg.Err))
 		m.state = StateInput
 		cmds = append(cmds, m.focusTextarea())
+
+	case SkillsListResultMsg:
+		if m.skillsToggleMode && len(msg.Skills) > 0 {
+			// Show toggle selector
+			m.appendToViewport(m.renderer.RenderSystemMessage("Toggle skills (Esc to cancel):"))
+			m.selector = buildSkillsToggleSelector(msg.Skills, m.disabledSkills, m.styles)
+			m.selector.SetWidth(m.width)
+			m.selectingSkill = true
+			m.skillsList = msg.Skills
+			m.state = StateInput
+			m.skillsToggleMode = false
+			cmds = append(cmds, m.focusTextarea())
+		} else {
+			m.appendToViewport(formatSkillsListDisplay(msg.Skills, m.disabledSkills))
+			m.state = StateInput
+			m.skillsToggleMode = false
+			cmds = append(cmds, m.focusTextarea())
+		}
+
+	case SkillsListErrorMsg:
+		m.appendToViewport(fmt.Sprintf("Error fetching skills: %v\n", msg.Err))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case SkillToggleSentMsg:
+		name := skillDisplayName(msg.SkillPath)
+		if msg.Enabled {
+			m.appendToViewport(fmt.Sprintf("Skill %q enabled.\n", name))
+			// Remove from local disabled list
+			var filtered []string
+			for _, p := range m.disabledSkills {
+				if p != msg.SkillPath {
+					filtered = append(filtered, p)
+				}
+			}
+			m.disabledSkills = filtered
+		} else {
+			m.appendToViewport(fmt.Sprintf("Skill %q disabled.\n", name))
+			m.disabledSkills = append(m.disabledSkills, msg.SkillPath)
+		}
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case SkillToggleErrorMsg:
+		m.appendToViewport(fmt.Sprintf("Error toggling skill: %v\n", msg.Err))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
 	}
 
 	return &m, tea.Batch(cmds...)
@@ -664,7 +718,7 @@ func (m Model) View() string {
 			inputView = m.spinner.View() + " " + m.styles.SpinnerMessage.Render("Loading sessions...")
 		}
 	case StateInput:
-		if (m.selectingModel || m.selectingApprovalMode) && m.selector != nil {
+		if (m.selectingModel || m.selectingApprovalMode || m.selectingSkill) && m.selector != nil {
 			inputView = m.selector.View()
 		} else {
 			inputView = m.textarea.View()
@@ -911,6 +965,53 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.selectingSkill {
+		if m.selector != nil {
+			if m.isViewportScrollKey(msg) {
+				var cmd tea.Cmd
+				m.viewport, cmd = m.viewport.Update(msg)
+				return m, cmd
+			}
+
+			done := m.selector.Update(msg)
+			if done {
+				m.selectingSkill = false
+				if m.selector.Cancelled() {
+					m.selector = nil
+					m.state = StateInput
+					return m, m.focusTextarea()
+				}
+				idx := m.selector.Selected()
+				m.selector = nil
+				if idx >= 0 && idx < len(m.skillsList) {
+					skill := m.skillsList[idx]
+					// Check if currently disabled
+					isDisabled := false
+					for _, p := range m.disabledSkills {
+						if p == skill.Path {
+							isDisabled = true
+							break
+						}
+					}
+					// Toggle: if disabled, enable; if enabled, disable
+					newEnabled := isDisabled
+					m.spinnerMsg = "Toggling skill..."
+					m.state = StateWatching
+					m.textarea.Blur()
+					return m, sendToggleSkillCmd(m.client, m.workflowID, skill.Path, newEnabled)
+				}
+				return m, m.focusTextarea()
+			}
+			return m, nil
+		}
+		if msg.Type == tea.KeyEsc {
+			m.selectingSkill = false
+			m.state = StateInput
+			return m, m.focusTextarea()
+		}
+		return m, nil
+	}
+
 	// Intercept multi-line paste: show "[N lines pasted]" placeholder
 	if msg.Paste && msg.Type == tea.KeyRunes && strings.ContainsRune(string(msg.Runes), '\n') {
 		content := string(msg.Runes)
@@ -1146,6 +1247,21 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				cwd, _ = os.Getwd()
 			}
 			return m, runReviewDiffCmd(cwd)
+		}
+		if line == "/skills" || line == "/skills list" || line == "/skills toggle" {
+			if m.workflowID == "" {
+				m.appendToViewport("No active session.\n")
+				return m, nil
+			}
+			m.spinnerMsg = "Fetching skills..."
+			m.state = StateWatching
+			m.textarea.Blur()
+			if line == "/skills toggle" {
+				m.skillsToggleMode = true
+			} else {
+				m.skillsToggleMode = false
+			}
+			return m, querySkillsCmd(m.client, m.workflowID)
 		}
 
 		// Show user message in viewport (❯ prefix, no separators)

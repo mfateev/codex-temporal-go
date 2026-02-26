@@ -71,6 +71,11 @@ func AgenticWorkflow(ctx workflow.Context, input WorkflowInput) (WorkflowResult,
 		state.loadMemorySummary(ctx)
 	}
 
+	// Load available skills at session start (only for root workflows)
+	if input.Depth == 0 {
+		state.loadSkills(ctx)
+	}
+
 	// Generate initial turn ID
 	turnID := state.nextTurnID()
 
