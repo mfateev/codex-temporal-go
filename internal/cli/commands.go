@@ -688,3 +688,28 @@ func sendToggleSkillCmd(c client.Client, workflowID, skillPath string, enabled b
 		return SkillToggleSentMsg{SkillPath: skillPath, Enabled: enabled}
 	}
 }
+
+// sendSetSessionNameCmd sends a set_session_name Update to the workflow.
+func sendSetSessionNameCmd(c client.Client, workflowID, name string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		updateHandle, err := c.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+			WorkflowID:   workflowID,
+			UpdateName:   workflow.UpdateSessionName,
+			Args:         []interface{}{workflow.SetSessionNameRequest{Name: name}},
+			WaitForStage: client.WorkflowUpdateStageCompleted,
+		})
+		if err != nil {
+			return SessionNameErrorMsg{Err: err}
+		}
+
+		var resp workflow.SetSessionNameResponse
+		if err := updateHandle.Get(ctx, &resp); err != nil {
+			return SessionNameErrorMsg{Err: err}
+		}
+
+		return SessionNameSentMsg{Name: name}
+	}
+}

@@ -95,6 +95,10 @@ const (
 	// UpdateToggleSkill enables or disables a specific skill.
 	// Used by the CLI /skills toggle command.
 	UpdateToggleSkill = "toggle_skill"
+
+	// UpdateSessionName sets a user-friendly name for the session.
+	// Used by the CLI /rename command.
+	UpdateSessionName = "set_session_name"
 )
 
 // UpdateModelRequest is the payload for the update_model Update.
@@ -170,6 +174,16 @@ type ToggleSkillRequest struct {
 
 // ToggleSkillResponse is returned by the toggle_skill Update.
 type ToggleSkillResponse struct {
+	Acknowledged bool `json:"acknowledged"`
+}
+
+// SetSessionNameRequest is the payload for the set_session_name Update.
+type SetSessionNameRequest struct {
+	Name string `json:"name"`
+}
+
+// SetSessionNameResponse is returned by the set_session_name Update.
+type SetSessionNameResponse struct {
 	Acknowledged bool `json:"acknowledged"`
 }
 
@@ -455,6 +469,10 @@ type SessionState struct {
 	// Subagent control — manages child workflow lifecycles.
 	// Maps to: codex-rs/core/src/agent/control.rs AgentControl
 	AgentCtl *AgentControl `json:"agent_ctl,omitempty"`
+
+	// User-assigned session name (set via /rename, persists across CAN).
+	// Maps to: codex-rs thread_name
+	SessionName string `json:"session_name,omitempty"`
 
 	// Discovered skills metadata (loaded at session start, persists across CAN).
 	// Maps to: codex-rs/core/src/skills/manager.rs SkillsManager

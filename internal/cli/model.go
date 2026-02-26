@@ -157,6 +157,7 @@ type Model struct {
 	turnCount         int
 	spinnerMsg        string
 	workerVersion     string
+	sessionName       string
 
 	// Approval state
 	pendingApprovals   []workflow.PendingApproval
@@ -558,6 +559,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case PersonalityUpdateErrorMsg:
 		m.appendToViewport(fmt.Sprintf("Error updating personality: %v\n", msg.Err))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case SessionNameSentMsg:
+		m.sessionName = msg.Name
+		m.appendToViewport(m.renderer.RenderSystemMessage(
+			fmt.Sprintf("Session renamed to %q.", msg.Name)))
+		m.state = StateInput
+		cmds = append(cmds, m.focusTextarea())
+
+	case SessionNameErrorMsg:
+		m.appendToViewport(fmt.Sprintf("Error renaming session: %v\n", msg.Err))
 		m.state = StateInput
 		cmds = append(cmds, m.focusTextarea())
 
@@ -1229,6 +1242,21 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = StateInput
 			m.textarea.Blur()
 			return m, nil
+		}
+		if strings.HasPrefix(line, "/rename") {
+			if m.workflowID == "" {
+				m.appendToViewport("No active session.\n")
+				return m, nil
+			}
+			name := strings.TrimSpace(strings.TrimPrefix(line, "/rename"))
+			if name == "" {
+				m.appendToViewport("Usage: /rename <name>\n")
+				return m, nil
+			}
+			m.spinnerMsg = "Renaming session..."
+			m.state = StateWatching
+			m.textarea.Blur()
+			return m, sendSetSessionNameCmd(m.client, m.workflowID, name)
 		}
 		if line == "/init" {
 			cwd := m.config.Cwd

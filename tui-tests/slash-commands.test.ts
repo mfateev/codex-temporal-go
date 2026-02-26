@@ -546,6 +546,34 @@ test.describe("/skills command", () => {
   });
 });
 
+// --- /rename command ---
+test.describe("/rename command", () => {
+  test.use({
+    program: {
+      file: tcxBinary,
+      args: [...fullAutoArgs, "-m", "Say exactly: canary8901"],
+    },
+    rows: 30,
+    columns: 120,
+  });
+
+  test("/rename sets session name", async ({ terminal }) => {
+    await expect(
+      terminal.getByText(/canary8901/gi, { full: true, strict: false })
+    ).toBeVisible({ timeout: EXPECT_TIMEOUT });
+
+    await expect(
+      terminal.getByText(/ready/g, { full: true, strict: false })
+    ).toBeVisible({ timeout: EXPECT_TIMEOUT });
+
+    terminal.submit("/rename my-test-session");
+
+    await expect(
+      terminal.getByText(/renamed to/gi, { full: true, strict: false })
+    ).toBeVisible({ timeout: EXPECT_TIMEOUT });
+  });
+});
+
 // =====================================================================
 // Group C: Multi-session commands
 // =====================================================================

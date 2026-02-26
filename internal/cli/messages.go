@@ -267,3 +267,13 @@ type SkillToggleSentMsg struct {
 type SkillToggleErrorMsg struct {
 	Err error
 }
+
+// SessionNameSentMsg is sent after a session name update succeeds.
+type SessionNameSentMsg struct {
+	Name string
+}
+
+// SessionNameErrorMsg is sent when a session name update fails.
+type SessionNameErrorMsg struct {
+	Err error
+}
