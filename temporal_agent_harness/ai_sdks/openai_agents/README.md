@@ -589,10 +589,9 @@ through `RunResultStreaming.stream_events()`, which wraps them in the
 agents-SDK `StreamEvent` union (so raw model events arrive as
 `RawResponsesStreamEvent.data`).
 
-External consumers (UIs, tracing pipelines, etc.) observe events as
-they arrive by hosting a [`WorkflowStream`](../workflow_streams/README.md)
-in the workflow and subscribing with `WorkflowStreamClient`. The
-streaming activity publishes each event to the topic configured on
+External consumers (UIs, tracing pipelines, etc.) observe events as they arrive on an External
+Workflow Streams output topic. The streaming activity publishes each event directly through
+`ExternalOutputStreamProducer` to the topic configured on
 `ModelActivityParameters.streaming_topic`. The topic is required
 when using `Runner.run_streamed`; calling it without a configured topic
 raises before any activity is scheduled.
@@ -619,33 +618,32 @@ class MyAgent:
         return result.final_output
 ```
 
-To publish raw model events to external subscribers, host a
-`WorkflowStream` in the workflow and configure
-`OpenAIAgentsPlugin(model_params=ModelActivityParameters(streaming_topic="events"))`. See [`temporalio.contrib.workflow_streams`](../workflow_streams/README.md) for the
-publisher and subscriber API.
+To publish raw model events to external subscribers, configure
+`OpenAIAgentsPlugin(model_params=ModelActivityParameters(streaming_topic="events"))` and use the
+same external-stream backend configuration in the workflow Worker, activity Worker, and reader.
+Subscribe with `ExternalOutputStreamClient`; provider cursors are opaque and should be serialized
+unchanged. See the harness's
+[External Workflow Streams design](../../../docs/internal/agentevent-workflow-stream.md).
 
 `RunResultStreaming.stream_events()` yields the agents-SDK
 `StreamEvent` union (`RawResponsesStreamEvent`, `RunItemStreamEvent`,
 `AgentUpdatedStreamEvent`); native OpenAI response events arrive
-wrapped as `RawResponsesStreamEvent.data`. Workflow-stream subscribers,
+wrapped as `RawResponsesStreamEvent.data`. External-stream subscribers,
 by contrast, receive the unwrapped native events directly because the
 streaming activity publishes them straight from `Model.stream_response`.
 
-Streaming is incompatible with `use_local_activity` because local
-activities support neither activity heartbeats nor the workflow stream
-signal channel.
+Streaming is incompatible with `use_local_activity` because the direct external-output publisher
+requires a regular Activity client/context.
 
-Activity retries surface to workflow-stream subscribers but not to
+Activity retries surface to external-stream subscribers but not to
 `RunResultStreaming.stream_events()`. Events are published to the
 stream as `Model.stream_response` produces them, so a partial attempt
 that fails mid-response leaves its emitted events on the stream and the
 retry attempt publishes a second sequence. `stream_events()` only sees
 the final successful attempt's collected events because it consumes the
-activity's return value. Workflow-stream subscribers should treat
-retries the same way as any other workflow_streams publisher — see
-[Delivery semantics](../workflow_streams/README.md) for the trade and
-the conventional `RETRY` event pattern for surfacing the transition to
-consumers.
+activity's return value. External-stream subscribers should treat each Activity attempt as a
+distinct producer; partial records from a failed attempt remain readable before the retry's
+sequence.
 
 ## Feature Support
 

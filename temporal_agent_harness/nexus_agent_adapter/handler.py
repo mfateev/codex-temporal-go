@@ -1,8 +1,7 @@
 # ABOUTME: Python implementation of the AgentService Nexus handler.
 #
-# Replaces a Go handler (see git history) that only existed because pollMessages needs
-# update-with-callback, unsupported in Python until sdk-python#1631. All operations except
-# pollMessages just delegate to AgentClient (see _agent_client).
+# Most operations delegate to AgentClient. pollMessages bridges the Nexus API to
+# the agent's external output stream.
 
 from __future__ import annotations
 
@@ -13,9 +12,12 @@ from dataclasses import dataclass
 from nexusrpc import HandlerError, HandlerErrorType
 from nexusrpc.handler import StartOperationContext, service_handler, sync_operation
 from temporalio import nexus
-from temporalio.client import Client
-from temporalio.contrib.workflow_streams import PollInput, PollResult
-from temporalio.service import RPCError
+from temporalio.client import Client, WorkflowExecutionStatus
+from temporalio.contrib.external_workflow_streams import (
+    Cursor,
+    ExternalOutputStreamClient,
+)
+from temporalio.service import RPCError, RPCStatusCode
 
 from temporal_agent_harness.harness.agent_client import (
     AgentClient,
@@ -23,9 +25,18 @@ from temporal_agent_harness.harness.agent_client import (
     StaleTurnError,
     ToolApprovalError,
 )
+from temporal_agent_harness.harness.external_streams import (
+    BEGINNING_STREAM_CURSOR,
+    ExternalStreamBackendFactory,
+    close_external_stream_backend,
+    create_external_stream_backend,
+    deserialize_stream_cursor,
+    workflow_chain_key,
+)
 from temporal_agent_harness.harness.agent_protocol import (
     TURN_EVENTS_TOPIC,
     AgentConfig,
+    AgentEvent,
     OperatorCommand,
     PendingCallback,
     PendingTurn,
@@ -62,16 +73,9 @@ from .generated import (
 )
 from .generated import AgentService as AgentServiceDefinition
 
-# WorkflowStream's private poll-update name (not part of its public API), hardcoded since
-# pollMessages must attach to it for any agent without importing that agent's workflow code.
-_WORKFLOW_STREAM_POLL_UPDATE = "__temporal_workflow_stream_poll"
 DEFAULT_POLL_TIMEOUT_SECONDS = 30.0
+_POLL_BATCH_SIZE = 100
 _MAX_SEND_RETRIES = 5
-
-
-def _is_workflow_already_completed(exc: Exception) -> bool:
-    """True when the target agent workflow has already finished (see poll_messages)."""
-    return "already completed" in str(exc).lower()
 
 
 def _nexus_operator_command(cmd: OperatorCommand) -> NexusOperatorCommand:
@@ -147,16 +151,27 @@ class AgentServiceHandler:
     consume the agent's response stream.
     """
 
-    def __init__(self, client: Client, config: Config) -> None:
+    def __init__(
+        self,
+        client: Client,
+        config: Config,
+        *,
+        backend_factory: ExternalStreamBackendFactory = create_external_stream_backend,
+    ) -> None:
         self._client = client
         self._config = config
+        self._backend_factory = backend_factory
 
     def _workflow_id(self, session_id: str) -> str:
         return self._config.workflow_id_prefix + session_id
 
     def _agent_client(self, session_id: str) -> AgentClient:
         """Cheap to construct per-call. Every operation but pollMessages delegates to it."""
-        return AgentClient(self._client, self._workflow_id(session_id))
+        return AgentClient(
+            self._client,
+            self._workflow_id(session_id),
+            backend_factory=self._backend_factory,
+        )
 
     # -----------------------------------------------------------------------
     # sendAgentMessage — AgentClient.start_and_submit_message()'s guess-and-retry caller
@@ -186,6 +201,12 @@ class AgentServiceHandler:
                 expected_turn = status.current_turn + len(status.pending_turns) + 1
 
             try:
+                try:
+                    stream_cursor = await client.event_tail()
+                except RPCError as exc:
+                    if exc.status != RPCStatusCode.NOT_FOUND:
+                        raise
+                    stream_cursor = BEGINNING_STREAM_CURSOR
                 reply = await client.start_and_submit_message(
                     input.msg_type,
                     payload,
@@ -201,7 +222,7 @@ class AgentServiceHandler:
             return SendMessageOutput(
                 turn_number=reply.turn_number,
                 turn_id=reply.turn_id,
-                stream_head_offset=reply.accepted_offset,
+                stream_head_offset=stream_cursor,
                 pending=reply.pending,
             )
         raise HandlerError(
@@ -329,7 +350,7 @@ class AgentServiceHandler:
         )
 
     # -----------------------------------------------------------------------
-    # pollMessages — async operation backed by WorkflowStream's poll update
+    # pollMessages — long-poll the external output stream
     # -----------------------------------------------------------------------
 
     @nexus.temporal_operation
@@ -339,39 +360,96 @@ class AgentServiceHandler:
         client: nexus.TemporalNexusClient,
         input: PollMessagesInput,
     ) -> nexus.TemporalOperationResult[PollMessagesOutput]:
-        """Long-polls WorkflowStream via update-with-callback. Returns closed=True
-        synchronously if the target workflow has already completed."""
+        """Long-poll the external output topic and return opaque resume cursors."""
+        del ctx, client
         workflow_id = self._workflow_id(input.session_id)
-        timeout_seconds = input.timeout_seconds or DEFAULT_POLL_TIMEOUT_SECONDS
-
+        timeout_seconds = (
+            DEFAULT_POLL_TIMEOUT_SECONDS
+            if input.timeout_seconds is None
+            else input.timeout_seconds
+        )
+        backend = self._backend_factory()
         try:
-            result = await client.start_workflow_update(
-                workflow_id,
-                _WORKFLOW_STREAM_POLL_UPDATE,
-                PollInput(from_offset=input.cursor, topics=[TURN_EVENTS_TOPIC]),
-                result_type=PollResult,
+            description = await self._client.get_workflow_handle(workflow_id).describe()
+            reader = await ExternalOutputStreamClient.connect(
+                backend=backend,
+                workflow=await workflow_chain_key(self._client, workflow_id),
+                client=self._client,
             )
-        except RPCError as e:
-            if _is_workflow_already_completed(e):
+            topic = reader.topic(TURN_EVENTS_TOPIC, type=AgentEvent)
+            after = deserialize_stream_cursor(input.cursor)
+            if (
+                description.status != WorkflowExecutionStatus.RUNNING
+                and after == await topic.tail()
+            ):
+                return nexus.TemporalOperationResult.sync(
+                    PollMessagesOutput(
+                        items=[],
+                        more_ready=False,
+                        next_offset=input.cursor,
+                        closed=True,
+                    )
+                )
+            events = topic.subscribe(after=after)
+            items: list[StreamItem] = []
+            next_cursor = input.cursor
+            closed = False
+
+            try:
+                async with asyncio.timeout(timeout_seconds):
+                    item = await anext(events)
+            except TimeoutError:
+                description = await self._client.get_workflow_handle(
+                    workflow_id
+                ).describe()
+                closed = description.status != WorkflowExecutionStatus.RUNNING
+            except StopAsyncIteration:
+                closed = True
+            else:
+                while True:
+                    next_cursor = Cursor(item.offset).serialize()
+                    items.append(
+                        StreamItem(
+                            topic=TURN_EVENTS_TOPIC,
+                            data=item.data.model_dump_json(by_alias=True),
+                            offset=next_cursor,
+                        )
+                    )
+                    if len(items) >= _POLL_BATCH_SIZE:
+                        break
+                    try:
+                        # Once the long poll has one event, drain only data that is
+                        # already available; the caller can immediately poll again.
+                        async with asyncio.timeout(0.001):
+                            item = await anext(events)
+                    except TimeoutError:
+                        break
+                    except StopAsyncIteration:
+                        closed = True
+                        break
+
+            close = getattr(events, "aclose", None)
+            if close is not None:
+                await close()
+            return nexus.TemporalOperationResult.sync(
+                PollMessagesOutput(
+                    items=items,
+                    more_ready=len(items) == _POLL_BATCH_SIZE,
+                    next_offset=next_cursor,
+                    closed=closed,
+                )
+            )
+        except RPCError as exc:
+            if exc.status == RPCStatusCode.NOT_FOUND:
                 return nexus.TemporalOperationResult.sync(
                     PollMessagesOutput(
                         items=[], more_ready=False, next_offset=input.cursor, closed=True
                     )
                 )
             raise
-
-        if result.token is not None:
-            return nexus.TemporalOperationResult.async_token(result.token)
-
-        poll_result: PollResult = result.value
-        return nexus.TemporalOperationResult.sync(
-            PollMessagesOutput(
-                items=[
-                    StreamItem(topic=item.topic, data=item.data, offset=item.offset)
-                    for item in poll_result.items
-                ],
-                more_ready=poll_result.more_ready,
-                next_offset=poll_result.next_offset,
-                closed=False,
-            )
-        )
+        except ValueError as exc:
+            raise HandlerError(
+                f"invalid stream cursor: {exc}", type=HandlerErrorType.BAD_REQUEST
+            ) from exc
+        finally:
+            await close_external_stream_backend(backend)

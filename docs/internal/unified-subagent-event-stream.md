@@ -1,30 +1,15 @@
 # Unified Subagent Event Stream (client-side stream merge)
 
-**Status:** ✅ **Implemented** (W1–W4 landed; see [Workstreams](#workstreams)). The merge layer
-lives in [`harness/stream_merge/`](../temporal_agent_harness/harness/stream_merge) and is wired into
-`AgentClient.send_message` / `attach`; the protocol deltas + the in-workflow `subagent_reply_received`
-publish shipped. **One known caveat:** the merge can only read a subagent stream while that subagent
-is LIVE — `workflow_streams` cannot yet subscribe to a *completed* (e.g. `stop_subagent`'d) workflow's
-stream. This is **handled by graceful degradation, not a failure**: when the merge can't read a
-stopped/completed child (most visibly on an `attach` after the child was stopped) it releases the
-child's close gate so the parent renders fully and surfaces a non-fatal `subagent_stream_unavailable`
-marker for the child's forgone detail (covered end-to-end by
-`test_attach_after_stopped_subagent_degrades_gracefully`). An upstream `workflow_streams` fix that
-makes a completed stream readable is in flight; until then the child's own turn detail is forgone on a
-post-stop replay. This fulfills the
-explicitly-deferred client work committed in [`agents-as-subagents.md`](agents-as-subagents.md)
-**Decision #6** ("Collecting multiple agents' streams for a UI is a client-side concern:
-`agent_client.py` will later learn to ad-hoc mount subagent workflow streams on demand so a UI can
-assemble them … only the *consuming* of the child streams is deferred").
+**Status:** ✅ **Implemented.** The merge layer lives in `harness/stream_merge/` and is wired into
+`AgentClient.send_message` / `attach`. Each agent now publishes a finished, externally stored output
+topic, so stopped/completed subagent history remains replayable.
 
-**Scope (planned):** a new `agent_client`-side merge layer (its own subdirectory — see
-[Code layout](#code-layout)) consumed transparently by `AgentClient.send_message` / `attach`; small
-protocol deltas in `harness/agent_protocol/` (`SubagentMessageSent.from_offset`, a new
-`SubagentReplyReceived` event, `AgentMessageReply.accepted_offset`, and an `agent_id` stamped on
-every `AgentEvent`); one in-workflow publish of the new event in `run_subagent_turn`; and an
-in-workflow read of the `WorkflowStream` head via its existing private `_on_offset()` (no
-`workflow_streams` change). The private `_stream_turn` is removed — `send_message` / `attach` both
-go through the merge.
+> **Migration note (2026-08-26):** The detailed design record below predates the External Workflow
+> Streams port. References to `WorkflowStream`, integer offset `0`,
+> `AgentMessageReply.accepted_offset`, and live-workflow-only subscriptions describe the old
+> implementation. Current code uses `ExternalOutputStreamClient`, opaque serialized cursors
+> (`"B"` means beginning), a pre-submit topic-tail snapshot, and externally replayable completed
+> topics. The bracket/gate merge algorithm remains current.
 
 **Non-scope:** the independent per-agent streams themselves. **Each agent keeps exactly one
 private stream and a subagent's stream is NEVER mirrored onto its parent's** (Decision #6,
@@ -40,7 +25,7 @@ changed. This feature is purely a **client-side merge** of those independent str
 
 From the UI's perspective, an agent that drives subagents should look like **one logical event
 stream** — the parent's events plus, recursively, every subagent's events — even though each agent
-publishes to its own independent Temporal `WorkflowStream`. The UI must get this by calling the
+publishes to its own independent external output topic. The UI must get this by calling the
 exact same `AgentClient.send_message` / `attach` utilities it already uses; all the complexity of
 observing `subagent_started`, pulling out the child `workflow_id`, mounting that child's stream
 (recursively, for subagents-of-subagents, and for multiple concurrent subagents), and coalescing

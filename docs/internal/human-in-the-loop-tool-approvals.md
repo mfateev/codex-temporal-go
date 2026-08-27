@@ -81,12 +81,9 @@
   the dispatcher honors its own `-> _R` signature. Monty depends on this (it uses
   `resp.flights`); the QA agent stringifies tool results, which is why this only surfaced
   once Monty migrated.
-- **Close-while-pending is verified via a query, not the post-close stream.**
-  `WorkflowStreamClient` events are served by the *live* workflow; once the workflow
-  COMPLETES (which closing does), the trailing `tool_approval_resolved` / `reply` /
-  `turn_end` are no longer replayable. The test therefore asserts the durable outcome
-  with a `last_reply` query after completion. The approve/deny/concurrent tests read the
-  live stream normally (their workflow stays running).
+- **Close-while-pending remains externally replayable.** The external output topic carries the
+  trailing `tool_approval_resolved` / `reply` / `turn_end` and a FINISH record, so tests and clients
+  can validate the durable outcome through the stream after the Workflow completes.
 - The E2E tests (`harness/test_tool_approvals.py`) run against a real workflow + activity
   on the time-skipping server and cover the full policy matrix (safe-auto-approve under
   `allow_inherently_safe`; safe still gated under `always_require_approvals`; allow-list;
@@ -127,11 +124,9 @@ async def delete_workflow(store_display_name: Injected[str], workflow_id: str) -
     ...
 
 # Builder must set a default policy; a caller can override it via AgentConfig.approval_policy.
-runner = (
-    AgentWorkflowRunner.builder(config=config)
-    .set_stream(WorkflowStream())
-    .set_approval_policy_default(ToolApprovalPolicy.allow_inherently_safe())
-    .build()
+runner = AgentWorkflowRunner(
+    config,
+    approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
 )
 ```
 
@@ -229,10 +224,9 @@ Adding an approval gate to this shape forces either approval logic into the gene
    "agent closed before approval"), raising `ToolApprovalDenied`. The workflow winds down
    cleanly instead of hanging.
 
-> **Ordering note:** Temporal's `WorkflowStream` guarantees event ordering across
-> workflow- and activity-published events, so `tool_approval_requested` (workflow) ↔
-> `tool_requested` (streaming activity) need no special handling — causal order is the
-> observed order.
+> **Ordering note:** the external output provider preserves each producer's order. Explicit
+> workflow checkpoints and activity-side brackets preserve the causal order between approval and
+> tool lifecycle events.
 
 ---
 

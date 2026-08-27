@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
@@ -26,11 +26,16 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.client import Client, WorkflowHandle, WorkflowUpdateFailedError
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
-from temporal_agent_harness.harness import AgentWorkflowRunner, agent, slash_commands
+from temporal_agent_harness.harness import (
+    AgentWorkflowRunner,
+    agent,
+    create_external_stream_backend,
+    slash_commands,
+    subscribe_external_output,
+)
 from temporal_agent_harness.harness.agent_protocol import (
     AGENT_INTERFACE_QUERY,
     AGENT_STATUS_QUERY,
@@ -109,7 +114,6 @@ class TypedProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             # Default queuing on (tests send several messages back-to-back); a config
             # value would still win over this default.
             enable_message_queuing_default=True,
@@ -154,7 +158,6 @@ class SlashExtensionProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.always_require_approvals(),
             slash_commands=[
                 *slash_commands.default_commands(),
@@ -193,6 +196,7 @@ async def client_and_queue():
         env.client,
         task_queue=task_queue,
         workflows=[TypedProbeAgent, SlashExtensionProbeAgent],
+        external_stream_backend=create_external_stream_backend(),
         # Unsandboxed so the test module's imports (pydantic, harness, pytest) don't
         # trip the workflow sandbox; the runner logic under test is unaffected.
         workflow_runner=UnsandboxedWorkflowRunner(),
@@ -458,7 +462,7 @@ async def test_attach_replays_operator_only_history_and_stops(client_and_queue):
     agent_client = AgentClient(client, handle.id)
 
     stream = await agent_client.attach(
-        from_offset=0,
+        from_offset="B",
         on_item=lambda item, _resume_offset: item,
     )
 
@@ -528,18 +532,10 @@ async def test_configured_core_command_preempts_agent_extension(
 
 
 async def _collect_until_turn_end(client: Client, workflow_id: str) -> list[AgentEvent]:
-    from datetime import timedelta
-
-    from temporalio.contrib.workflow_streams import WorkflowStreamClient
-
-    stream = WorkflowStreamClient.create(client, workflow_id)
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
-        async for item in stream.subscribe(
-            topics=["turn_events"],
-            from_offset=0,
-            result_type=AgentEvent,
-            poll_cooldown=timedelta(milliseconds=10),
+        async for item in subscribe_external_output(
+            client, workflow_id, "turn_events", type=AgentEvent
         ):
             events.append(item.data)
             if item.data.event.type == AgentEventType.TURN_END:
@@ -550,18 +546,10 @@ async def _collect_until_turn_end(client: Client, workflow_id: str) -> list[Agen
 async def _collect_until_operator_terminal(
     client: Client, workflow_id: str
 ) -> list[AgentEvent]:
-    from datetime import timedelta
-
-    from temporalio.contrib.workflow_streams import WorkflowStreamClient
-
-    stream = WorkflowStreamClient.create(client, workflow_id)
     events: list[AgentEvent] = []
     async with asyncio.timeout(30):
-        async for item in stream.subscribe(
-            topics=["turn_events"],
-            from_offset=0,
-            result_type=AgentEvent,
-            poll_cooldown=timedelta(milliseconds=10),
+        async for item in subscribe_external_output(
+            client, workflow_id, "turn_events", type=AgentEvent
         ):
             events.append(item.data)
             if item.data.event.type in {
@@ -783,21 +771,11 @@ def test_agent_defn_rejects_bespoke_input_at_definition_time():
 # ---------------------------------------------------------------------------
 
 
-def test_stream_and_approval_policy_default_are_required():
-    """``stream`` and ``approval_policy_default`` are required keyword-only constructor
-    args, so omitting either is a call-site TypeError — no runtime ``build()`` check to
-    forget. The author must make a deliberate safe-by-default approval choice."""
-    stream = MagicMock()
-    stream.topic.return_value = MagicMock()
-    with pytest.raises(TypeError):
-        AgentWorkflowRunner(  # type: ignore[call-arg]  — missing stream
-            AgentConfig(),
-            approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
-        )
+def test_approval_policy_default_is_required():
+    """The author must make a deliberate safe-by-default approval choice."""
     with pytest.raises(TypeError):
         AgentWorkflowRunner(  # type: ignore[call-arg]  — missing approval_policy_default
             AgentConfig(),
-            stream=stream,
         )
 
 
@@ -946,7 +924,7 @@ def test_errored_subagent_turn_closes_bracket_on_actual_accepted_turn(offline_bu
         inst, "run_script", accepted, outcome="error"
     )
 
-    published = [c.args[0] for c in runner._events.publish.call_args_list]
+    published = list(runner._pending_events)
     replies = [e for e in published if isinstance(e.event, SubagentReplyReceived)]
     assert len(replies) == 1
     rr = replies[0].event
@@ -977,6 +955,15 @@ def offline_build(monkeypatch):
     for handler in ("set_update_handler", "set_query_handler", "set_signal_handler"):
         monkeypatch.setattr(aw.workflow, handler, lambda *a, **k: None)
     monkeypatch.setattr(aw.workflow, "time", lambda: 0.0)
+    monkeypatch.setattr(
+        aw.workflow,
+        "info",
+        lambda: SimpleNamespace(
+            namespace="default",
+            workflow_id="offline-agent",
+            first_execution_run_id="offline-first-run",
+        ),
+    )
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
@@ -987,8 +974,6 @@ def offline_build(monkeypatch):
         default: bool | None = None,
         slash_commands=None,
     ):
-        stream = MagicMock()
-        stream.topic.return_value = MagicMock()
         kwargs: dict[str, Any] = {}
         if default is not None:
             kwargs["enable_message_queuing_default"] = default
@@ -996,7 +981,6 @@ def offline_build(monkeypatch):
             kwargs["slash_commands"] = slash_commands
         return AgentWorkflowRunner(
             config,
-            stream=stream,
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
             **kwargs,
         )
@@ -1011,16 +995,22 @@ def offline_build_policy(monkeypatch):
     for handler in ("set_update_handler", "set_query_handler", "set_signal_handler"):
         monkeypatch.setattr(aw.workflow, handler, lambda *a, **k: None)
     monkeypatch.setattr(aw.workflow, "time", lambda: 0.0)
+    monkeypatch.setattr(
+        aw.workflow,
+        "info",
+        lambda: SimpleNamespace(
+            namespace="default",
+            workflow_id="offline-agent",
+            first_execution_run_id="offline-first-run",
+        ),
+    )
     # The runner generates its short agent_id from workflow.uuid4() in __init__; offline there is
     # no workflow loop, so stub it with a plain uuid.
     monkeypatch.setattr(aw.workflow, "uuid4", lambda: uuid.uuid4())
 
     def build(config: AgentConfig, *, default: ToolApprovalPolicy, custom_fallback=None):
-        stream = MagicMock()
-        stream.topic.return_value = MagicMock()
         return AgentWorkflowRunner(
             config,
-            stream=stream,
             approval_policy_default=default,
             custom_approval_fallback=custom_fallback,
         )

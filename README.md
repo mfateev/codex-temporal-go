@@ -51,6 +51,10 @@ temporal-agent-harness = { git = "https://github.com/temporal-community/temporal
 Then run `uv sync`. (Pin to a specific `rev = "..."` instead of `branch = "main"` for a
 reproducible build.)
 
+The harness currently pins the unreleased Python SDK revision that provides External Workflow
+Streams. That pin is part of the harness dependency itself, so applications do not need a separate
+SDK source override.
+
 **Extras:**
 
 - **`ui`** — the reusable FastAPI server and packaged browser UI (pulls in `fastapi[standard]`,
@@ -205,7 +209,6 @@ from datetime import timedelta
 
 from pydantic import BaseModel
 from temporalio import workflow
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.workflow import ActivityConfig
 
 from temporal_agent_harness.harness import AgentWorkflowRunner, agent, slash_commands
@@ -240,7 +243,6 @@ class TravelAgent:
         # statically declare themselves inherently safe.
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
             slash_commands=slash_commands.default_commands(),
         )
@@ -306,6 +308,7 @@ the `code-mode` extra, which pulls in [`pydantic-monty`](https://pypi.org/projec
 the sandbox scripts run in) alongside the durable bodies of any activity-backed host tools:
 
 ```python
+from temporal_agent_harness.harness import create_external_stream_backend
 from temporal_agent_harness.harness.code_mode.activities import CODE_MODE_ACTIVITIES
 
 worker = Worker(
@@ -313,6 +316,7 @@ worker = Worker(
     task_queue=...,
     workflows=[MyAgent],
     activities=[*CODE_MODE_ACTIVITIES, *(agent.tool_activity(t) for t in my_activity_tools)],
+    external_stream_backend=create_external_stream_backend(),
 )
 ```
 
@@ -343,7 +347,6 @@ from temporal_agent_harness.harness import slash_commands
 
 self._runner = AgentWorkflowRunner(
     config,
-    stream=WorkflowStream(),
     approval_policy_default=ToolApprovalPolicy.always_require_approvals(),
     slash_commands=slash_commands.commands("approvals", "status", "stop"),
 )
@@ -364,7 +367,6 @@ SUPPORTED_MODELS = ("gemini-3.5-flash", "gemini-3.1-flash-lite")
 
 self._runner = AgentWorkflowRunner(
     config,
-    stream=WorkflowStream(),
     approval_policy_default=ToolApprovalPolicy.always_require_approvals(),
     slash_commands=[
         *slash_commands.default_commands(),
@@ -383,6 +385,9 @@ self._runner = AgentWorkflowRunner(
 - [uv](https://docs.astral.sh/uv/) for dependency management
 - [just](https://just.systems/) for the example recipes
 - [pnpm](https://pnpm.io/) for building or developing the Svelte UI
+- Redis **5+** for External Workflow Streams. The default URL is
+  `redis://127.0.0.1:6379/0`; override it with
+  `TEMPORAL_AGENT_HARNESS_REDIS_URL`.
 - A Temporal service. `just temporal` starts a local dev server if you have the `temporal`
   CLI installed.
 

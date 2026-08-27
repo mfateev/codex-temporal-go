@@ -31,6 +31,7 @@ from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
 from temporal_agent_harness.ai_sdks.google_genai_plugin import GoogleGenAIPlugin
+from temporal_agent_harness.harness import create_external_stream_backend
 from temporal_agent_harness.utils.large_payload import with_large_payload_offload
 
 from .workflow import TASK_QUEUE, CodingAgentWorkflow
@@ -65,6 +66,7 @@ async def main() -> None:
         client,
         task_queue=task_queue,
         workflows=[CodingAgentWorkflow],
+        external_stream_backend=create_external_stream_backend(),
         # No tool activities: the coding tools are callback tools fulfilled by the shim. The
         # Gemini interactions activity is registered by the plugin above.
         activities=[],

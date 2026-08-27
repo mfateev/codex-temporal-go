@@ -158,7 +158,7 @@ class OpenAIStreamObserver:
         )
         # Open the model-interaction span at dispatch, before awaiting any event, so the
         # span duration is the real call latency.
-        self._publisher.publish(ModelInteractionStarted(model=self._model))
+        await self._publisher.publish(ModelInteractionStarted(model=self._model))
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
@@ -167,7 +167,7 @@ class OpenAIStreamObserver:
                 # In a finally-equivalent: always close the started bracket, even if the
                 # stream errored (usage then stays None). Published while the
                 # publisher/stack is still open.
-                self._publisher.publish(
+                await self._publisher.publish(
                     ModelInteractionEnded(model=self._model, usage=self._usage)
                 )
         finally:
@@ -186,15 +186,15 @@ class OpenAIStreamObserver:
 
         if isinstance(event, ResponseTextDeltaEvent):
             if event.delta:
-                pub.publish(ReplyDelta(text=event.delta))
+                await pub.publish(ReplyDelta(text=event.delta))
         elif isinstance(event, ResponseReasoningSummaryTextDeltaEvent):
             # Reasoning *summary* text (capability-gated, spec §6). The raw
             # payload is dumped so a consumer can position it like Gemini's.
-            pub.publish(
+            await pub.publish(
                 ThoughtSummaryDelta(delta=event.model_dump(exclude_none=True, mode="json"))
             )
         elif isinstance(event, ResponseOutputTextAnnotationAddedEvent):
-            pub.publish(
+            await pub.publish(
                 TextAnnotationDelta(delta=event.model_dump(exclude_none=True, mode="json"))
             )
         elif isinstance(event, ResponseOutputItemAddedEvent):
@@ -211,11 +211,11 @@ class OpenAIStreamObserver:
                     self._arg_buffers.get(event.item_id, "") + event.delta
                 )
         elif isinstance(event, ResponseFunctionCallArgumentsDoneEvent):
-            self._emit_tool_requested(event, pub)
+            await self._emit_tool_requested(event, pub)
         elif isinstance(event, ResponseCompletedEvent):
             self._usage = _to_token_usage(getattr(event.response, "usage", None))
 
-    def _emit_tool_requested(
+    async def _emit_tool_requested(
         self,
         event: ResponseFunctionCallArgumentsDoneEvent,
         pub: TurnEventPublisher,
@@ -232,7 +232,7 @@ class OpenAIStreamObserver:
         buffered = self._arg_buffers.pop(item_id, "")
         call_id, name = self._fn_calls.pop(item_id, (item_id, event.name))
         raw = event.arguments or buffered
-        pub.publish(
+        await pub.publish(
             ToolRequested(
                 tool_id=call_id,
                 tool_name=name,

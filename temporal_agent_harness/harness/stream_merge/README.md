@@ -1,8 +1,8 @@
 # `stream_merge` — the client-side unified subagent event stream
 
 This package merges a root agent's event stream with, recursively, every subagent stream it drives
-into **one logical stream** — while each agent keeps its own independent Temporal `WorkflowStream`
-(stream isolation is never violated; the merge only *reads* each stream). It is what lets
+into **one logical stream** — while each agent keeps its own independent external output topic
+(stream isolation is never violated; the merge only *reads* each topic). It is what lets
 `AgentClient.send_message` / `attach` show a UI a parent + all its subagents as a single ordered
 stream without the caller knowing subagents exist.
 
@@ -24,7 +24,7 @@ child:        ⌊ turn_started(T) … reply(T) … turn_end(T) ⌋
 - **Close gate** — a `subagent_reply_received(C,T)` waits until `C`'s `turn_end(T)` has been emitted
   (the parent's `run_subagent_turn` really blocked on the child's whole turn).
 
-Everything not related by a bracket may interleave in any order. Within a single stream, offset
+Everything not related by a bracket may interleave in any order. Within a single stream, cursor
 order is inviolable; only *cross-stream* interleaving may differ between a live view and a replay.
 
 Correctness depends on the per-subagent **FIFO ticket gate** in `run_subagent_turn`: it serializes a
@@ -52,23 +52,21 @@ without revisiting this.
 ## Mounting / unmounting + graceful degradation
 
 - **Mount** on `subagent_message_sent` (idempotent — a re-used child mounts once; it carries both
-  the child `workflow_id` and the `from_offset` to position the cursor).
+  the child `workflow_id` and the opaque `from_offset` cursor used to position the reader).
 - **Unmount** on `subagent_stopped` (and when a child cursor turns out unreadable/exhausted): the
   engine closes that child's cursor and drops it. This is safe because `subagent_stopped` is emitted
   at a quiescent point — by then every one of that child's turns is drained, and a stopped
   subagent's id never reappears — so no gated event is stranded. Unmounting matters operationally,
-  not just for tidiness: each open cursor holds a long-poll **update** in flight against its
-  workflow, and Temporal caps concurrent in-flight updates **per workflow at 10**; releasing a
-  stopped child's cursor frees its slot.
+  not just for tidiness: each open cursor owns an external-provider long poll and backend
+  connection; releasing a stopped child frees both.
 - **Graceful degradation (no retries — recovery is a fresh attach).** A subagent stream can fail to
-  deliver short of normal end-of-stream — a stopped/completed child whose stream isn't yet replayable,
-  or the per-workflow concurrent-update cap (`RPCError` when too many cursors poll one workflow). It
-  surfaces three ways: the pull **raises** (cap), **cleanly ends** mid-turn (completed workflow), or
-  **hangs** (poll against a completed child that neither yields nor returns). When the merge gives up
+  deliver short of normal end-of-stream because its provider or backend is unavailable. It
+  surfaces three ways: the pull **raises** (provider/storage failure), **cleanly ends** mid-turn
+  (finished topic), or **hangs** (an unreachable provider). When the merge gives up
   on a child it (1) **releases its close gates** — a `gone` child's `subagent_reply_received` is
   treated as satisfied, so the parent's reply *and everything sequenced after it* still flow (without
   this, a dead child's never-coming `turn_end` strands the parent — the observed **hang**); (2)
-  **drops the cursor** (frees its poll slot); (3) emits a non-fatal **`subagent_stream_unavailable`** marker
+  **drops the cursor** (frees its backend resources); (3) emits a non-fatal **`subagent_stream_unavailable`** marker
   (only if a turn was abandoned), stamped `agent_id == subagent_id` so a UI routes it to that
   subagent's view. The parent stream is self-sufficient, so only the child's own detail is forgone.
   A failed **root** ends the stream cleanly (no exception out of the generator, which would 500 the
@@ -80,42 +78,32 @@ without revisiting this.
   delivering — so a child is given up only when **it itself** is silent for the whole window while
   blocking. A single shared timer would instead be re-armed by any cursor's delivery, letting a chatty
   sibling defer a dead child's give-up indefinitely. That bound is **liveness, not ordering** (ordering
-  stays gate/offset-driven), and applies only while close-gate-blocked, so an idle/slow live stream is
-  never spuriously dropped. Once the upstream readable-completed-stream fix lands, a stopped child
-  delivers its `turn_end` normally and the backstop simply stops firing.
+  stays gate/cursor-driven), and applies only while close-gate-blocked, so an idle/slow live stream
+  is never spuriously dropped. A finished external topic remains replayable after its Workflow has
+  completed, so graceful subagent stops normally deliver their final `turn_end` and FINISH record.
 
-> **Upstream constraint (not fixable here).** `subscribe()`'s `__temporal_workflow_stream_poll`
-> update blocks server-side in `wait_condition` until new items arrive (or the stream detaches).
-> A client that disconnects mid-poll **cannot reclaim** that parked server-side update — Temporal
-> updates are not client-cancellable — so a subscribe to an **idle** child (one between turns, not
-> stopped) leaves a slot held until that child's next event. Re-attaching repeatedly therefore
-> *accumulates* parked polls on a live subagent. The merge degrades gracefully when the cap is hit,
-> but the real mitigation is on the consumer: don't re-attach an idle session on a fixed tick
-> (the example UIs poll the cheap `agent_status` query while idle and only re-attach on new work).
-> An upstream `workflow_streams` fix for cancel-on-detach is in flight.
-
-## Quiescent start (why a scalar offset suffices to resume)
+## Quiescent start (why a scalar cursor suffices to resume)
 
 `send_message` resumes at a quiescent point — the submitted turn's `turn_started` — via
 `skip_until_turn_id`. A parent `turn_end(N)` proves the whole subagent subtree is idle (the turn
 handler can't return while awaiting a `run_subagent_turn`, which blocks on the child's `turn_end`,
 recursively), so that's a clean, empty-bracket start.
 
-`attach` resumes from an **arbitrary** offset with **no skip** — and that's still safe without
+`attach` resumes from an **arbitrary** cursor with **no skip** — and that's still safe without
 bracket reconstruction, because the merge only ever *mounts* a child when it *emits* that child's
 `subagent_message_sent`. A subagent whose turn began before the resume offset is therefore never
 mounted: its events are simply absent, and its later `subagent_reply_received` (which would otherwise
 close-gate forever) is released by the **unmounted-stuck give-up** — the engine sees a buffered
 `reply_received` for a child that isn't mounted, knows its `turn_end` can never come, and gives up at
-once. Subagents dispatched at/after the offset mount and bracket-merge normally. So no per-stream
-offset vector is ever needed — just the scalar root offset plus `subagent_message_sent.from_offset`.
+once. Subagents dispatched at/after the cursor mount and bracket-merge normally. So no per-stream
+cursor vector is ever needed — just the scalar root cursor plus `subagent_message_sent.from_offset`.
 
-The merge yields a `(event, resume_offset)` pair per step; `resume_offset` is a **root-stream**
-offset that advances **only on root events** — every subagent event between two root events carries
+The merge yields a `(event, resume_offset)` pair per step; `resume_offset` is a serialized
+**root-stream cursor** that advances **only on root events** — every subagent event between two root events carries
 the same value (the position just past the preceding root event). A consumer records the latest and
 hands it back to `attach(from_offset=...)`. Two consequences a consumer must understand:
 
-- **Any root offset is a *valid* resume point** — the merge never produces a broken ordering or
+- **Any root cursor is a *valid* resume point** — the merge never produces a broken ordering or
   wedges from one. It is *not* the merged display ordinal (the cross-stream interleaving itself isn't
   a resumable position).
 - **Resume is lossless only at root-event granularity.** A consumer that disconnects *mid a
@@ -123,15 +111,16 @@ hands it back to `attach(from_offset=...)`. Two consequences a consumer must und
   resume the root starts past that subagent's `subagent_message_sent`, so the merge never re-mounts
   it (and emits **no** `subagent_stream_unavailable` marker — it treats the detail as already
   delivered). The parent's reply and everything after it still flow. A consumer that needs every
-  subagent event across a mid-turn reconnect must re-attach from `0`.
+  subagent event across a mid-turn reconnect must re-attach from `"B"`.
 
 ## Entry points
 
 `merge_stream(client, root_workflow_id, root_from_offset, skip_until_turn_id, select, should_stop,
 stall_grace_seconds)` yields `(AgentEvent, resume_offset)` pairs. `AgentClient` wraps it:
-- **send_message** → `root_from_offset = reply.accepted_offset`, `skip_until_turn_id = reply.turn_id`,
-  `select_live`, stop at the root's `turn_end` for that turn.
-- **attach (full replay)** → `from_offset = 0`, no skip, `select_replay`, stop via status re-query
+- **send_message** → snapshots the root topic tail before submission and uses it as
+  `root_from_offset`, with `skip_until_turn_id = reply.turn_id`, `select_live`, and a stop at the
+  root's `turn_end` for that turn.
+- **attach (full replay)** → `from_offset = "B"`, no skip, `select_replay`, stop via status re-query
   (root idle and all turns through `current_turn` ended).
 - **attach (resume)** → `from_offset = <any resume offset the previous stream handed back>`, no skip,
   `select_replay`; streams only events after it (a subagent whose turn began earlier is omitted; its

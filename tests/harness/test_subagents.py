@@ -119,7 +119,7 @@ def test_register_keys_by_handle_and_stores_workflow_id():
     assert inst.workflow_id == "sample-subagent-<uuid>"  # the real child id, hidden from the model
     assert inst.agent_key == "sample"
     assert inst.next_expected_turn == 1
-    assert inst.last_consumed_offset == 0
+    assert inst.last_consumed_offset == "B"
     assert st.subagent("a3f9c2") is inst
     assert st.has_subagent("a3f9c2") and not st.has_subagent("nope")
 

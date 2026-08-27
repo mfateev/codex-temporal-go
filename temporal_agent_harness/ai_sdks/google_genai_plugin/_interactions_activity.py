@@ -105,20 +105,20 @@ def make_gemini_interactions_create_streamed(client: GeminiClient):
             model = kwargs.get("model")
             usage: TokenUsage | None = None
             if publisher is not None:
-                publisher.publish(ModelInteractionStarted(model=model))
+                await publisher.publish(ModelInteractionStarted(model=model))
             try:
                 stream: AsyncStream[
                     InteractionSSEEvent
                 ] = await client.aio.interactions.create(**kwargs)
                 async for event in stream:
                     if event_publisher is not None:
-                        event_publisher.handle(event)
+                        await event_publisher.handle(event)
                     if isinstance(event, InteractionCompletedEvent):
                         usage = _to_token_usage(event.interaction.usage)
                     collected.append(event.model_dump(exclude_none=True, mode="json"))
             finally:
                 if publisher is not None:
-                    publisher.publish(ModelInteractionEnded(model=model, usage=usage))
+                    await publisher.publish(ModelInteractionEnded(model=model, usage=usage))
 
         return _InteractionResult(events=collected)
 
@@ -249,15 +249,15 @@ class _StreamEventPublisher:
         # streamed on DeltaArgumentsDelta, parsed once the step stops.
         self._tool_request_arg_buffers: dict[int, str] = {}
 
-    def handle(self, event: InteractionSSEEvent) -> None:
+    async def handle(self, event: InteractionSSEEvent) -> None:
         """Dispatch one event on the union's ``event_type`` discriminator."""
         match event:
             case StepStart():
                 self._on_step_start(event)
             case StepDelta():
-                self._on_step_delta(event)
+                await self._on_step_delta(event)
             case StepStop():
-                self._on_step_stop(event)
+                await self._on_step_stop(event)
 
             # The remaining union members are NOT step-lifecycle events:
             # InteractionCreatedEvent ("interaction.created"),
@@ -308,13 +308,13 @@ class _StreamEventPublisher:
             case _:
                 pass
 
-    def _on_step_delta(self, event: StepDelta) -> None:
+    async def _on_step_delta(self, event: StepDelta) -> None:
         """Incremental CONTENT for the open step (``event.delta`` sub-union)."""
         match event.delta:
             case DeltaText(text=text) if text:
-                self._publisher.publish(ReplyDelta(text=text))
+                await self._publisher.publish(ReplyDelta(text=text))
             case DeltaThoughtSummary() as delta:
-                self._publisher.publish(
+                await self._publisher.publish(
                     ThoughtSummaryDelta(
                         delta=delta.model_dump(exclude_none=True, mode="json")
                     )
@@ -326,7 +326,7 @@ class _StreamEventPublisher:
                 # concatenate the reply_delta chunks, ``.encode("utf-8")``,
                 # then slice ``[start_index:end_index]``. Indexing the Python
                 # string directly only works for pure-ASCII output.
-                self._publisher.publish(
+                await self._publisher.publish(
                     TextAnnotationDelta(
                         delta=delta.model_dump(exclude_none=True, mode="json")
                     )
@@ -356,7 +356,7 @@ class _StreamEventPublisher:
             case _:
                 pass
 
-    def _on_step_stop(self, event: StepStop) -> None:
+    async def _on_step_stop(self, event: StepStop) -> None:
         """A step is complete. ``StepStop`` carries only ``index``.
 
         Publish the consolidated ``tool_requested`` (if a custom function-call step
@@ -367,7 +367,7 @@ class _StreamEventPublisher:
         """
         start = self._pending_tool_starts.pop(event.index, None)
         if start is not None:
-            self._publisher.publish(
+            await self._publisher.publish(
                 ToolStartEvent(
                     tool_id=start.tool_id,
                     tool_name=start.tool_name,
@@ -377,13 +377,13 @@ class _StreamEventPublisher:
             return
         end = self._pending_tool_ends.pop(event.index, None)
         if end is not None:
-            self._publisher.publish(
+            await self._publisher.publish(
                 ToolEndEvent(tool_id=end.tool_id, tool_name=end.tool_name)
             )
             return
         call = self._pending_tool_requests.pop(event.index, None)
         if call is not None:
-            self._publisher.publish(
+            await self._publisher.publish(
                 ToolRequested(
                     tool_id=call.id,
                     tool_name=call.name,

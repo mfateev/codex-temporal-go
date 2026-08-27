@@ -70,17 +70,16 @@ above (`turn_started`, `reply_delta`, `tool_*`, …).
   `reply`/`error`, `operator_command_*`) keyed on `type`. The *same* vocabulary for every agent
   regardless of which SDK wrote the loop → one UI, one analytics pipeline across the fleet. (Defined
   in `agent_protocol/events.py`.)
-- **One topic, two producers.** All events publish to the single `turn_events` topic on the agent's
-  `WorkflowStream`: **in-workflow** via `_pub` (lifecycle, the approval cascade, inline-tool
-  brackets) and **from inside activities** via `publisher_from_activity` (streamed `reply_delta`,
+- **One topic, two producers.** All events publish to the agent's `turn_events` external output
+  topic: **in-workflow** via `_pub` (lifecycle, the approval cascade, inline-tool brackets) and
+  **directly from activities** via `publisher_from_activity` (streamed `reply_delta`,
   `model_interaction_*`, activity-tool brackets). Raw provider tokens are folded into `AgentEvent`s
-  *inside* the activity — the lowest-level thing that crosses the activity→workflow→client boundary
-  is already a semantic event, never raw bytes.
-- **It's a durable, replayable stream, not a fire-and-forget feed.** Each event is a Temporal Signal
-  in workflow history, so the log is offset-addressed and reconstructed deterministically on replay;
-  a consumer subscribes by `workflow_id`, reads from an offset, and resumes after a disconnect
-  without loss (this backs the UI's play/pause replay). Each agent — root *and* every subagent — has
-  its own stream; the UI-facing "stream" is a client-side **merge** of the whole agent tree.
+  *inside* the activity, so the lowest-level value a client sees is already semantic.
+- **It's a durable, replayable stream, not a fire-and-forget feed.** Event payloads live in the
+  configured external provider (Redis by default); compact commit markers in Temporal History make
+  Workflow-originated publications deterministic. A consumer subscribes by `workflow_id`, resumes
+  with an opaque serialized cursor, and can replay after Workflow completion. Each agent — root and
+  every subagent — has its own topic; the UI-facing stream is a client-side **merge** of the tree.
 
 Full mechanics and durability guarantees:
 [`agentevent-workflow-stream.md`](agentevent-workflow-stream.md) (the primitive + durability) and
@@ -171,7 +170,7 @@ set for free, and adding your own is a few lines.
 ```python
 self._runner = AgentWorkflowRunner(
     config,
-    stream=WorkflowStream(),
+    approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
     slash_commands=[
         *slash_commands.default_commands(),      # keep the packaged ones
         model_slash_command(self._set_model),    # + your own

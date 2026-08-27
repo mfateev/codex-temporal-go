@@ -8,7 +8,7 @@ for positioning and for deciding when it's worth adopting.
 | Pillar | Inherited or invented? |
 |---|---|
 | **Durable execution** (crash-resume, retries, replay) | **Inherited** from Temporal — every agent is a workflow. |
-| **Standardized event stream** | Transport **inherited** (`workflow_streams`); the *protocol + client-side merge* are **invented**. |
+| **Standardized event stream** | Transport **inherited** (External Workflow Streams); the *protocol + client-side merge* are **invented**. |
 | **Human-in-the-loop approvals** | **Invented**, built on Temporal primitives (wait-conditions, updates). |
 | **Composable typed subagents** | **Invented**, built on child workflows + a typed self-describing interface. |
 
@@ -43,19 +43,19 @@ The Observability plane is carried by an **AgentEvent history** — a log of typ
 model interactions, the full tool lifecycle, approvals) that is *available as a stream*. This is
 where "standardized event stream" (the second pillar above) becomes concrete:
 
-- **It's a history, not just a live feed.** Every event is a Temporal Signal in the workflow's event
-  history, so the log is durable, offset-addressed, and **reconstructed deterministically on replay**
-  — the stream is a projection of Temporal's own history, not separate storage.
+- **It's a history, not just a live feed.** Payloads live in the external provider and compact
+  commit markers live in Temporal History, so Workflow publications remain deterministic while
+  clients can replay the durable provider log after Workflow completion.
 - **It's available as a replayable stream.** Consumers subscribe by `workflow_id` and read from an
-  offset; a client that disconnects resumes without losing events. This is what backs the UI's
+  serialized opaque cursor; a client that disconnects resumes without losing events. This is what backs the UI's
   play/pause replay — the UI holds no history of its own, so on restart it reattaches and rebuilds
   the whole stream from the workflow.
-- **Transport inherited, protocol invented.** The stream *mechanism* is Temporal's
-  `workflow_streams` (see the pillar table below); the harness's net-new is the uniform *AgentEvent
+- **Transport inherited, protocol invented.** The stream mechanism is Temporal's experimental
+  External Workflow Streams feature; the harness's net-new is the uniform *AgentEvent
   vocabulary* and the client-side merge that presents a whole agent tree as one stream.
 
-Full detail — the primitive, durability guarantees, `truncate` determinism on replay, retention
-limits, and exactly how the harness wires it — is in
+Full detail — the primitive, durability guarantees, provider retention, and exactly how the
+harness wires it — is in
 [`agentevent-workflow-stream.md`](agentevent-workflow-stream.md).
 
 ## vs. raw Temporal (child workflows / Nexus)

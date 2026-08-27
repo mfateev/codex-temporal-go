@@ -220,12 +220,19 @@ export class MockAgentApi implements AgentApi {
 
   async *attach(
     _sessionId: WorkflowId,
-    fromOffset = 0,
+    fromOffset = "B",
     signal?: AbortSignal
   ): AsyncIterable<AgentSseFrame> {
-    for (const item of realisticQaScenario.frames) {
+    let lastSeenIndex = -1;
+    if (fromOffset !== "B") {
+      for (let index = 0; index < realisticQaScenario.frames.length; index += 1) {
+        if (realisticQaScenario.frames[index]?.data.resume_offset === fromOffset) {
+          lastSeenIndex = index;
+        }
+      }
+    }
+    for (const item of realisticQaScenario.frames.slice(lastSeenIndex + 1)) {
       if (signal?.aborted) return;
-      if (item.data.resume_offset <= fromOffset) continue;
       await sleep(40);
       if (signal?.aborted) return;
       yield item;
@@ -237,13 +244,12 @@ export class MockAgentApi implements AgentApi {
     return {
       turn_number: request.expected_turn,
       turn_id: `mock-turn-${request.expected_turn}`,
-      accepted_offset: 0,
       pending: false
     };
   }
 
   async *chat(_request: ChatRequest, signal?: AbortSignal): AsyncIterable<AgentSseFrame> {
-    yield* this.attach("agent-session-mock-qa", 0, signal);
+    yield* this.attach("agent-session-mock-qa", "B", signal);
   }
 
   async approve(request: ToolApprovalRequest): Promise<ToolApprovalResponse> {

@@ -36,6 +36,8 @@ from temporalio.client import Client
 from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
+from temporal_agent_harness.harness import create_external_stream_backend
+
 from .workflow import TASK_QUEUE, PydanticAIHelloAgentWorkflow, _TEMPORAL_AGENT
 
 
@@ -59,6 +61,7 @@ async def main() -> None:
         client,
         task_queue=task_queue,
         workflows=[PydanticAIHelloAgentWorkflow],
+        external_stream_backend=create_external_stream_backend(),
         # No harness tool activities: get_weather is an inline workflow tool. The durable agent's
         # activities are registered by AgentPlugin.
         activities=[],

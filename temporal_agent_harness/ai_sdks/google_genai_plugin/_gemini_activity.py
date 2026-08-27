@@ -117,9 +117,9 @@ class GeminiApiCaller:
         ) -> _GeminiApiStreamedResponse:
             """Execute a streamed Gemini SDK API call, collecting all chunks.
 
-            When ``req.stream_turn_id`` is set, each chunk's text content is
+            When ``req.stream_context`` is set, each chunk's text content is
             republished as a ``reply_delta`` event on the parent workflow's
-            :class:`WorkflowStream` as soon as it arrives — fine-grained,
+            external output topic as soon as it arrives — fine-grained,
             visible to the UI in real time. Function-call chunks (no text
             parts) are silently skipped.
             """
@@ -153,7 +153,7 @@ class GeminiApiCaller:
                     if publisher is not None:
                         delta = _extract_text_delta(body)
                         if delta:
-                            publisher.publish(ReplyDelta(text=delta))
+                            await publisher.publish(ReplyDelta(text=delta))
 
             return _GeminiApiStreamedResponse(chunks=chunks)
 

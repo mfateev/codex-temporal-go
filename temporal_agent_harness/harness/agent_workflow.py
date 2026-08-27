@@ -5,7 +5,7 @@
 #
 # Usage: declare accepted messages as ``@agent.accepts`` handler methods
 # (``async def name(self, msg: InputModel) -> OutputModel``); construct an
-# AgentWorkflowRunner(config, stream=..., approval_policy_default=...) in your
+# AgentWorkflowRunner(config, approval_policy_default=...) in your
 # @workflow.init; and in @workflow.run drive the turn loop with ``await runner.run(self)``.
 # The runner discovers the handlers, routes
 # each inbound ``send_agent_message`` envelope to the one its ``type`` names, validates the
@@ -14,11 +14,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import ast
 import contextvars
 import inspect
 import textwrap
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -37,11 +39,12 @@ from typing import (
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from temporalio import activity, workflow
-from temporalio.contrib.workflow_streams import (
-    TopicHandle,
-    WorkflowStream,
-    WorkflowStreamClient,
-    WorkflowTopicHandle,
+from temporalio.contrib.external_workflow_streams import (
+    ExternalOutputStreamProducer,
+    ExternalOutputStreamProducerTopic,
+    ExternalOutputStreamTopic,
+    WorkflowChainKey,
+    external_output_stream,
 )
 from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityConfig
@@ -112,6 +115,11 @@ from temporal_agent_harness.harness.slash_commands import (
 # lives in its own leaf module so the sandbox-safe activity contracts in agent_protocol can embed
 # it without a circular import back through this module.
 from temporal_agent_harness.harness.stream_context import TurnStreamContext
+from temporal_agent_harness.harness.external_streams import (
+    ExternalStreamBackendFactory,
+    close_external_stream_backend,
+    create_external_stream_backend,
+)
 
 # ParamSpec/return-type vars for the tool decorators. They let each be typed as an
 # identity over the wrapped callable (``Callable[P, Awaitable[R]] -> Callable[P,
@@ -350,6 +358,7 @@ async def _apply_approval_policy(
             tool_id=tool_id, tool_name=tool_name, tool_input=tool_input
         ),
     )
+    await runner._flush_events()
 
     await workflow.wait_condition(
         lambda: runner._status.is_approval_resolved(tool_id) or runner._closed
@@ -369,6 +378,7 @@ async def _apply_approval_policy(
         runner._publish_approval_resolved(tool_id)
     else:
         outcome = runner._status.finalize_approval(tool_id, closed=runner._closed)
+    await runner._flush_events()
     if not outcome.approved:
         raise ToolApprovalDenied(tool_name, outcome.reason)
 
@@ -670,25 +680,24 @@ class AgentToolContext(BaseModel):
 
 
 class TurnEventPublisher:
-    """Activity-side handle that publishes events to a workflow's stream.
+    """Activity-side handle that publishes events to an external output stream.
 
     Bound to a :class:`TurnStreamContext` at construction so call sites
     don't have to re-thread turn metadata on every publish. Obtain one
     via :meth:`AgentWorkflowRunner.publisher_from_activity` (an async
-    context manager that owns the underlying
-    :class:`WorkflowStreamClient` lifecycle so deltas batch and drain
-    correctly).
+    context manager that owns the direct external-output producer and backend
+    lifecycle).
     """
 
     def __init__(
         self,
-        events: TopicHandle[AgentEvent],
+        events: ExternalOutputStreamProducerTopic[AgentEvent],
         context: TurnStreamContext,
     ) -> None:
         self._events = events
         self._context = context
 
-    def publish(self, event: AgentStreamItem) -> None:
+    async def publish(self, event: AgentStreamItem) -> None:
         """Wrap ``event`` in an :class:`AgentEvent` envelope and publish it.
 
         Producers build the typed payload (e.g. ``ReplyDelta(text=…)``); the
@@ -697,7 +706,7 @@ class TurnEventPublisher:
         which the workflow side threaded into the activity) and ``timestamp`` (wall-clock;
         the workflow side uses ``workflow.time()`` — both serialize identically).
         """
-        self._events.publish(
+        await self._events.publish(
             AgentEvent(
                 event=event,
                 agent_id=self._context.agent_id,
@@ -834,7 +843,7 @@ class _SubagentInstance:
     workflow_id: str
     agent_key: str
     next_expected_turn: int = 1
-    last_consumed_offset: int = 0
+    last_consumed_offset: str = "B"
     # FIFO gate: tickets handed out in call order; the holder whose ticket == _serving runs.
     _next_ticket: int = 0
     _serving: int = 0
@@ -879,10 +888,16 @@ class _WorkflowStatus:
         is_message_queuing_enabled: bool,
         approval_policy: ToolApprovalPolicy,
         has_custom_approval_fallback: bool = False,
+        namespace: str = "default",
+        workflow_id: str = "offline",
+        first_execution_run_id: str = "offline",
     ) -> None:
         # This agent's own short id — stamped on every event (via current_stream_context for
         # activity publishes, and _pub for in-workflow ones) and surfaced on the status query.
         self._agent_id: str = agent_id
+        self._namespace = namespace
+        self._workflow_id = workflow_id
+        self._first_execution_run_id = first_execution_run_id
         self._current_turn: int = 0
         self._current_turn_id: str | None = None
         self._turn_active: bool = False
@@ -917,6 +932,9 @@ class _WorkflowStatus:
             turn_id=self._current_turn_id,
             turn_number=self._current_turn,
             agent_id=self._agent_id,
+            namespace=self._namespace,
+            workflow_id=self._workflow_id,
+            first_execution_run_id=self._first_execution_run_id,
         )
 
     @property
@@ -1212,7 +1230,7 @@ class AgentWorkflowRunner:
     """Workflow-side agent runtime: discovers ``@agent.accepts`` handlers and dispatches.
 
     Construct it directly inside ``@workflow.init`` with the agent's :class:`AgentConfig`
-    plus the agent's defaults (``stream`` and ``approval_policy_default`` are required); see
+    plus the agent's defaults (``approval_policy_default`` is required); see
     :meth:`__init__`.
 
     Registers the update, query, and signal handlers the ``AgentClient`` protocol requires;
@@ -1226,7 +1244,6 @@ class AgentWorkflowRunner:
         self,
         config: AgentConfig,
         *,
-        stream: WorkflowStream,
         approval_policy_default: ToolApprovalPolicy,
         enable_message_queuing_default: bool = False,
         custom_approval_fallback: CustomApprovalFallback | None = None,
@@ -1236,7 +1253,6 @@ class AgentWorkflowRunner:
 
             self._runner = AgentWorkflowRunner(
                 config,
-                stream=WorkflowStream(),
                 approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
             )
 
@@ -1284,19 +1300,23 @@ class AgentWorkflowRunner:
         # generates its own. workflow.uuid4 is deterministic in-workflow (offline unit tests patch
         # it). Distinct from the full workflow_id, which the model/UI never needs to reproduce.
         self._agent_id: str = config.agent_id or workflow.uuid4().hex[:AGENT_ID_LENGTH]
-        # Retain the WorkflowStream itself (not just the topic handle) so the runner can read
-        # the stream's current head offset in-workflow — see ``_handle_send_agent_message``,
-        # which returns it as ``AgentMessageReply.accepted_offset`` for the client stream-merge.
-        self._stream = stream
-        self._events: WorkflowTopicHandle[AgentEvent] = stream.topic(
-            TURN_EVENTS_TOPIC, type=AgentEvent
+        self._events: ExternalOutputStreamTopic[AgentEvent] = (
+            external_output_stream.with_options(
+                max_publish_latency=timedelta(milliseconds=50),
+            ).topic(TURN_EVENTS_TOPIC, type=AgentEvent)
         )
+        self._pending_events: deque[AgentEvent] = deque()
+        self._publish_lock = asyncio.Lock()
         self._custom_approval_fallback = custom_approval_fallback
+        workflow_info = workflow.info()
         self._status = _WorkflowStatus(
             agent_id=self._agent_id,
             is_message_queuing_enabled=is_message_queuing_enabled,
             approval_policy=approval_policy,
             has_custom_approval_fallback=custom_approval_fallback is not None,
+            namespace=workflow_info.namespace,
+            workflow_id=workflow_info.workflow_id,
+            first_execution_run_id=workflow_info.first_execution_run_id,
         )
         self._closed = False
 
@@ -1358,14 +1378,6 @@ class AgentWorkflowRunner:
     # -- Protocol handlers --------------------------------------------------
 
     async def _handle_send_agent_message(self, message: AgentMessage) -> AgentMessageReply:
-        # Capture the stream head BEFORE publishing anything for this message: it is the
-        # client stream-merge's read-start hint (``accepted_offset``). The handler body is
-        # synchronous (no await that yields), so this runs atomically before the turn loop can
-        # publish this turn's ``turn_started`` — guaranteeing ``accepted_offset <= turn_started``,
-        # which is all the merge requires (it discards events up to ``turn_started``). Read the
-        # real log head (``_on_offset``), not a publish counter: activity-published events enter
-        # the same global log via signals and would be missed by an in-workflow counter.
-        accepted_offset = self._stream._on_offset()
         turn_id = str(workflow.uuid4())
         pending = self._status.has_pending_work
         turn_number = self._status.enqueue_message(message, turn_id)
@@ -1376,11 +1388,11 @@ class AgentWorkflowRunner:
                 turn_number,
                 MessageQueued(user_message=_render_message(message)),
             )
+            await self._flush_events()
 
         return AgentMessageReply(
             turn_number=turn_number,
             turn_id=turn_id,
-            accepted_offset=accepted_offset,
             pending=pending,
         )
 
@@ -1500,9 +1512,10 @@ class AgentWorkflowRunner:
             self._apply_policy_update(
                 self._status.approval_policy.with_tool_allowed(entry.tool_name)
             )
+        await self._flush_events()
         return ToolApprovalResult(tool_id=decision.tool_id, accepted=True)
 
-    def _handle_execute_operator_command(
+    async def _handle_execute_operator_command(
         self, request: OperatorCommandRequest
     ) -> OperatorCommandResult:
         """Execute a human/operator command without creating an agent turn.
@@ -1540,6 +1553,7 @@ class AgentWorkflowRunner:
                     message=message,
                 ),
             )
+            await self._flush_events()
             return OperatorCommandResult(text=f"Operator command failed: {message}")
         if reply is None:
             text = f"Unknown operator command: `{command.name}`."
@@ -1554,6 +1568,7 @@ class AgentWorkflowRunner:
                     message=text,
                 ),
             )
+            await self._flush_events()
             return OperatorCommandResult(text=text)
         self._pub(
             operator_command_id,
@@ -1566,6 +1581,7 @@ class AgentWorkflowRunner:
                 text=reply.text,
             ),
         )
+        await self._flush_events()
         return OperatorCommandResult(text=reply.text)
 
     # -- Tool-approval policy ----------------------------------------------
@@ -1747,6 +1763,7 @@ class AgentWorkflowRunner:
                 result.tool_id, outcome="ok", result=validated, error=None
             )
         self._publish_callback_resolved(result.tool_id)
+        await self._flush_events()
         return CallbackResultAck(tool_id=result.tool_id, accepted=True)
 
     def _publish_callback_resolved(self, tool_id: str) -> None:
@@ -1819,6 +1836,7 @@ class AgentWorkflowRunner:
                 output_schema=output_schema,
             ),
         )
+        await self._flush_events()
         timed_out = False
         try:
             await workflow.wait_condition(
@@ -1840,6 +1858,7 @@ class AgentWorkflowRunner:
             self._publish_callback_resolved(tool_id)
         else:
             outcome = self._status.finalize_callback(tool_id, closed=self._closed)
+        await self._flush_events()
 
         if outcome.outcome == "ok":
             return outcome.result
@@ -1931,32 +1950,42 @@ class AgentWorkflowRunner:
         does NOT end the session: its error surfaces as an :class:`AgentError` and the loop
         continues with the next message.
         """
-        while not self._closed:
-            await workflow.wait_condition(
-                lambda: self._status.has_pending_turns or self._closed
-            )
-            if self._closed:
-                break
-            envelope, turn_id = self._status.start_next_turn()
-            turn_number = self._status.current_turn
-            self._pub(
-                turn_id, turn_number, TurnStarted(user_message=_render_message(envelope))
-            )
-            try:
-                result = await self._dispatch_turn(agent, envelope)
+        try:
+            while not self._closed:
+                await workflow.wait_condition(
+                    lambda: self._status.has_pending_turns or self._closed
+                )
+                if self._closed:
+                    break
+                envelope, turn_id = self._status.start_next_turn()
+                turn_number = self._status.current_turn
                 self._pub(
                     turn_id,
                     turn_number,
-                    AgentReply(output=result.model_dump(mode="json")),
+                    TurnStarted(user_message=_render_message(envelope)),
                 )
-            except Exception as e:  # noqa: BLE001 — surface ANY turn failure, keep the loop alive
-                self._pub(turn_id, turn_number, AgentError(message=str(e)))
-            finally:
-                # The turn is over and the agent is idle again — whether the handler
-                # returned or raised. Mark idle, then announce turn_end (the definitive
-                # end-of-turn signal) before looping back to wait for the next message.
-                self._status.complete_turn()
-                self._pub(turn_id, turn_number, TurnEnded())
+                await self._flush_events()
+                try:
+                    result = await self._dispatch_turn(agent, envelope)
+                    self._pub(
+                        turn_id,
+                        turn_number,
+                        AgentReply(output=result.model_dump(mode="json")),
+                    )
+                except Exception as e:  # noqa: BLE001 — surface turn failure, keep session alive
+                    self._pub(turn_id, turn_number, AgentError(message=str(e)))
+                finally:
+                    # The turn is over and the agent is idle again — whether the handler
+                    # returned or raised. Mark idle, then announce turn_end (the definitive
+                    # end-of-turn signal) before looping back to wait for the next message.
+                    self._status.complete_turn()
+                    self._pub(turn_id, turn_number, TurnEnded())
+                    await self._flush_events()
+        finally:
+            # Drain the final turn events, then close the externally readable topic.
+            await self._flush_events()
+            if self._closed:
+                await self._events.finish()
 
     async def _dispatch_turn(self, agent: object, envelope: AgentMessage) -> BaseModel:
         """Dispatch one already-validated turn envelope and return its reply model."""
@@ -2073,7 +2102,7 @@ class AgentWorkflowRunner:
         # Announce the subagent on this agent's stream (against the in-flight turn). The
         # ``workflow_id`` lets a consumer dynamically mount the subagent's own stream for a
         # consolidated view — subagent streams are never mirrored onto this one.
-        self.publish(
+        await self.publish(
             SubagentStarted(
                 subagent_id=handle, agent_key=agent_key, workflow_id=workflow_id
             )
@@ -2089,7 +2118,7 @@ class AgentWorkflowRunner:
         stream), then deregisters so a later ``send_<function>`` to ``handle`` is rejected."""
         inst = self._status.subagent(handle)  # validate ownership (raises UnknownSubagent)
         await workflow.get_external_workflow_handle(inst.workflow_id).signal("close")
-        self.publish(
+        await self.publish(
             SubagentStopped(
                 subagent_id=inst.handle,
                 agent_key=inst.agent_key,
@@ -2182,6 +2211,7 @@ class AgentWorkflowRunner:
                     self._publish_subagent_reply_received(
                         inst, msg_type, accepted_turn, outcome="error"
                     )
+                    await self._flush_events()
                 raise
             inst.next_expected_turn = result.turn_number + 1
             inst.last_consumed_offset = result.consumed_offset
@@ -2192,6 +2222,7 @@ class AgentWorkflowRunner:
             self._publish_subagent_reply_received(
                 inst, msg_type, result.turn_number, outcome="ok"
             )
+            await self._flush_events()
             return result.output
         finally:
             inst.release_gate()
@@ -2230,7 +2261,12 @@ class AgentWorkflowRunner:
         ``SubagentMessageSent``'s correlation fields so a client stream-merge can match the
         bracket on ``(workflow_id, subagent_turn)``.
         """
-        self.publish(
+        ctx = self.current_stream_context
+        if ctx is None:
+            raise RuntimeError("publishing subagent reply with no active turn")
+        self._pub(
+            ctx.turn_id,
+            ctx.turn_number,
             SubagentReplyReceived(
                 subagent_id=inst.handle,
                 agent_key=inst.agent_key,
@@ -2241,17 +2277,18 @@ class AgentWorkflowRunner:
             )
         )
 
-    def publish(self, event: AgentStreamItem) -> None:
+    async def publish(self, event: AgentStreamItem) -> None:
         """Publish an event against the in-flight turn (for custom intermediate events).
 
         Most agents never need this — streaming (reply deltas, tool lifecycle) is handled
-        by the runner↔SDK integration and ``run_tool``. Use it from inside a handler to
-        emit a bespoke progress event. Raises if no turn is active.
+        by the runner↔SDK integration and ``run_tool``. ``await`` it from inside a handler
+        to emit a bespoke progress event immediately. Raises if no turn is active.
         """
         ctx = self.current_stream_context
         if ctx is None:
             raise RuntimeError("publish() called with no active turn")
         self._pub(ctx.turn_id, ctx.turn_number, event)
+        await self._flush_events()
 
     # -- Activity-side publishing helper -----------------------------------
 
@@ -2260,43 +2297,52 @@ class AgentWorkflowRunner:
     async def publisher_from_activity(
         context: TurnStreamContext,
         *,
-        batch_interval: timedelta = timedelta(milliseconds=50),
+        backend_factory: ExternalStreamBackendFactory = create_external_stream_backend,
     ) -> AsyncIterator[TurnEventPublisher]:
         """Open a :class:`TurnEventPublisher` from inside a Temporal activity.
 
         Use from within a ``@activity.defn`` that needs to publish
         turn events (e.g. ``reply_delta`` chunks from a streaming model
-        call) to its parent workflow's :class:`WorkflowStream`.
+        call) to its parent workflow's external output topic.
 
-        Encapsulates the :class:`WorkflowStreamClient` lifecycle (entered
-        for batched flushing, exited so the tail drains before the
-        activity returns) and the topic binding. Activities just call
-        ``publisher.publish(...)``.
+        Encapsulates the direct output producer and its factory-owned backend.
+        Activities just ``await publisher.publish(...)``.
 
         Args:
             context: Carrier identifying the workflow + turn to publish
                 against. Built on the workflow side via
                 :attr:`AgentWorkflowRunner.current_stream_context` and
                 forwarded opaquely through activity inputs.
-            batch_interval: Background flush cadence on the underlying
-                stream client. Default 50ms keeps the UI feel snappy.
+            backend_factory: Creates the external provider connection used by
+                this activity. The default is the harness Redis configuration.
 
         Yields:
-            A :class:`TurnEventPublisher` bound to the active workflow
-            (resolved from the activity context) and the given turn.
+            A :class:`TurnEventPublisher` bound to the workflow chain and turn.
         """
-        client = WorkflowStreamClient.from_within_activity(
-            batch_interval=batch_interval,
+        backend = backend_factory()
+        info = activity.info()
+        producer = await ExternalOutputStreamProducer.connect(
+            backend=backend,
+            workflow=WorkflowChainKey(
+                namespace=context.namespace,
+                workflow_id=context.workflow_id,
+                first_execution_run_id=context.first_execution_run_id,
+            ),
+            client=activity.client(),
+            # A model/tool retry may legitimately produce a different stream. This mirrors
+            # the old per-attempt publisher identity instead of claiming byte-identical
+            # idempotency for non-deterministic model output.
+            session_id=(
+                f"activity:{info.workflow_run_id}:{info.activity_id}:attempt:{info.attempt}"
+            ),
         )
-        # ``from_within_activity`` targets the workflow that SCHEDULED this activity (always the
-        # publishing agent), so events land on the right stream. The agent's SHORT id to stamp them
-        # with is not derivable from ``activity.info()`` (which only knows the workflow_id), so it
-        # rides in on the threaded ``context`` (TurnStreamContext.agent_id).
-        async with client:
+        try:
             yield TurnEventPublisher(
-                events=client.topic(TURN_EVENTS_TOPIC, type=AgentEvent),
+                events=producer.topic(TURN_EVENTS_TOPIC, type=AgentEvent),
                 context=context,
             )
+        finally:
+            await close_external_stream_backend(backend)
 
     # -- Tool execution -----------------------------------------------------
 
@@ -2353,8 +2399,8 @@ class AgentWorkflowRunner:
     # -- Internal -----------------------------------------------------------
 
     def _pub(self, turn_id: str, turn_number: int, event: AgentStreamItem) -> None:
-        """Wrap ``event`` in an :class:`AgentEvent` envelope and publish it."""
-        self._events.publish(
+        """Queue one Workflow event until the next deterministic async checkpoint."""
+        self._pending_events.append(
             AgentEvent(
                 event=event,
                 # This agent's own short id — so every event on the stream self-identifies its
@@ -2366,6 +2412,16 @@ class AgentWorkflowRunner:
                 timestamp=workflow.time(),
             )
         )
+
+    async def _drain_events(self) -> None:
+        """Publish the queued Workflow events serially, preserving call order."""
+        while self._pending_events:
+            await self._events.publish(self._pending_events.popleft())
+
+    async def _flush_events(self) -> None:
+        """Publish queued events serially at an explicit Workflow checkpoint."""
+        async with self._publish_lock:
+            await self._drain_events()
 
 
 # ---------------------------------------------------------------------------
@@ -2546,7 +2602,7 @@ def activity_tool_defn(
             async with AgentWorkflowRunner.publisher_from_activity(
                 tool_ctx.stream_context
             ) as pub:
-                pub.publish(
+                await pub.publish(
                     ToolStartEvent(
                         tool_id=tool_ctx.tool_id,
                         tool_name=tool_name,
@@ -2556,13 +2612,13 @@ def activity_tool_defn(
                 try:
                     result = await user_fn(*user_args, **kwargs)
                 except Exception as e:
-                    pub.publish(
+                    await pub.publish(
                         ToolErrorEvent(
                             tool_id=tool_ctx.tool_id, tool_name=tool_name, message=str(e)
                         )
                     )
                     raise
-                pub.publish(
+                await pub.publish(
                     ToolEndEvent(
                         tool_id=tool_ctx.tool_id,
                         tool_name=tool_name,

@@ -30,7 +30,7 @@ services:
         input: { $ref: "#/$defs/QuerySessionInput" }
         output: { $ref: "#/$defs/AgentStatusOutput" }
       pollMessages:
-        description: "Async operation - attaches a completion callback to WorkflowStream's built-in poll update so reply_delta events published from the agent workflow are delivered. Returns a batch of stream items (WorkflowStream PollResult wire format) plus the next cursor."
+        description: "Long-polls the agent's external output stream for turn events and returns the next opaque cursor."
         input: { $ref: "#/$defs/PollMessagesInput" }
         output: { $ref: "#/$defs/PollMessagesOutput" }
       provideCallbackResult:
@@ -67,8 +67,8 @@ $defs:
         type: string
         description: "Unique ID for this turn"
       streamHeadOffset:
-        type: integer
-        description: "Stream log offset at message-accept time; start the first pollMessages call from this offset to skip prior-turn history"
+        type: string
+        description: "Opaque external-stream cursor captured before message acceptance; use it for the first pollMessages call"
       pending:
         type: boolean
         description: "True if the message was queued behind an active turn rather than dispatched immediately"
@@ -420,10 +420,11 @@ $defs:
         type: string
         description: "Provider-prefixed session identifier"
       cursor:
-        type: integer
+        type: string
+        description: "Serialized opaque external-stream cursor (B means beginning)"
       timeoutSeconds:
         type: number
-        description: "How long the WorkflowStream poll update waits for new events before returning empty"
+        description: "How long to wait for a new external output event before returning empty"
     required:
       - sessionId
       - cursor
@@ -431,7 +432,7 @@ $defs:
 
   PollMessagesOutput:
     type: object
-    description: "Mirrors WorkflowStream PollResult wire format so the async update-with-callback payload decodes correctly without transformation."
+    description: "A batch from the agent's external output stream."
     properties:
       items:
         type: array
@@ -439,8 +440,8 @@ $defs:
           $ref: "#/$defs/StreamItem"
         description: "Stream events since cursor; decode each as TurnEvent and map to Slack output"
       next_offset:
-        type: integer
-        description: "Next cursor value to use in the following pollMessages call"
+        type: string
+        description: "Opaque cursor to use in the following pollMessages call"
       more_ready:
         type: boolean
         description: "True when more items are immediately available (batch was capped)"
@@ -455,17 +456,17 @@ $defs:
 
   StreamItem:
     type: object
-    description: "One event from WorkflowStream._log. Data is base64(proto Payload{encoding:json/plain, data:TurnEvent JSON})."
+    description: "One decoded event from the agent's external output stream."
     properties:
       topic:
         type: string
         description: "Stream topic name (turn_events)"
       data:
         type: string
-        description: "base64-encoded proto Payload containing a TurnEvent"
+        description: "AgentEvent encoded as JSON"
       offset:
-        type: integer
-        description: "Absolute position of this item in the stream"
+        type: string
+        description: "Opaque cursor immediately after this item"
     required:
       - topic
       - data

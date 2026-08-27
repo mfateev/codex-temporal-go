@@ -1,9 +1,9 @@
-# ABOUTME: Stateless agent-turn client for Temporal workflow_streams workflows.
+# ABOUTME: Stateless agent-turn client for External Workflow Streams agents.
 #
 # Abstracts a single agent turn — sending a user message to a Temporal workflow,
 # streaming intermediate tool events, and terminating when the turn ends (the
 # workflow's turn_end event) — into a single async iterator. Designed to be
-# resumable via a stream offset so that disconnects don't lose events.
+# resumable via an opaque stream cursor so that disconnects don't lose events.
 
 from __future__ import annotations
 
@@ -11,8 +11,13 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from typing import Any, TypeVar
 
-from temporalio.client import Client, WithStartWorkflowOperation, WorkflowUpdateFailedError
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
+from temporalio.client import (
+    Client,
+    WithStartWorkflowOperation,
+    WorkflowExecutionStatus,
+    WorkflowUpdateFailedError,
+)
+from temporalio.contrib.external_workflow_streams import ExternalOutputStreamClient
 
 from temporalio.common import WorkflowIDConflictPolicy
 
@@ -23,12 +28,14 @@ from temporal_agent_harness.harness.agent_protocol import (
     OPERATOR_INTERFACE_QUERY,
     PROVIDE_CALLBACK_RESULT_UPDATE,
     SEND_AGENT_MESSAGE_UPDATE,
+    TURN_EVENTS_TOPIC,
     TOOL_APPROVAL_UPDATE,
     AcceptedFunction,
     AgentConfig,
     AgentEvent,
     AgentEventType,
     AgentMessage,
+    AgentMessageReply,
     AgentStatus,
     CallbackResult,
     CallbackResultAck,
@@ -39,7 +46,6 @@ from temporal_agent_harness.harness.agent_protocol import (
     PendingCallback,
     ToolApprovalDecision,
     ToolApprovalResult,
-    AgentMessageReply,
 )
 from temporal_agent_harness.harness.stream_merge import (
     DEFAULT_STALL_GRACE_SECONDS,
@@ -48,6 +54,14 @@ from temporal_agent_harness.harness.stream_merge import (
     select_replay,
 )
 from temporal_agent_harness.harness.stream_merge.cursor import Cursor
+from temporal_agent_harness.harness.external_streams import (
+    BEGINNING_STREAM_CURSOR,
+    ExternalStreamBackendFactory,
+    StreamCursor,
+    close_external_stream_backend,
+    create_external_stream_backend,
+    workflow_chain_key,
+)
 
 # Client default: maximum seconds to wait for a turn to complete.
 DEFAULT_TURN_TIMEOUT = 300.0
@@ -117,7 +131,7 @@ AgentStreamOutput = AgentEvent | AgentTurnError | AgentTurnTimeout
 # per-stream offset and NOT a merged display ordinal: it advances only on ROOT events, so every event
 # within one subagent turn carries the same value (the cursor as of that turn's dispatch). See
 # ``stream_merge.merge.MergedItem``.
-OnItemCallback = Callable[[AgentStreamOutput, int], T]
+OnItemCallback = Callable[[AgentStreamOutput, StreamCursor], T]
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +154,12 @@ class AgentClient:
         self,
         temporal: Client,
         workflow_id: str,
+        *,
+        backend_factory: ExternalStreamBackendFactory = create_external_stream_backend,
     ) -> None:
         self._temporal = temporal
         self._workflow_id = workflow_id
+        self._backend_factory = backend_factory
 
     @property
     def workflow_id(self) -> str:
@@ -423,9 +440,10 @@ class AgentClient:
 
         Phase 1, :meth:`_submit_message`, runs eagerly here so ``StaleTurnError`` /
         ``AgentBusyError`` are raised *before* any streaming begins (and before the merge is even
-        constructed — there is no failure path after the agent has accepted). The update returns an
-        ``accepted_offset``; phase 2 then drives the client-side stream-merge from there: it skips
-        to this turn's ``turn_started`` (a quiescent start) and yields every event of the turn,
+        constructed — there is no failure path after the agent has accepted). Before submission,
+        the client snapshots the external topic's tail cursor. Phase 2 then drives the client-side
+        stream merge from that boundary: it skips to this turn's
+        ``turn_started`` and yields every event of the turn,
         coalescing the agent's own stream with each subagent stream it drives (recursively), in a
         semantically-valid order — through to this turn's ``turn_end``. The caller never tracks or
         passes an offset.
@@ -456,9 +474,11 @@ class AgentClient:
             StaleTurnError: The client is behind the workflow.
             AgentBusyError: The agent is busy and does not support enqueuing.
         """
+        from_cursor = await self.event_tail()
         reply = await self._submit_message(msg_type, payload, expected_turn)
         return self._merged_turn(
             reply,
+            from_cursor=from_cursor,
             on_item=on_item,
             timeout=timeout,
             stall_grace_seconds=subagent_stall_grace_seconds,
@@ -468,13 +488,15 @@ class AgentClient:
         self,
         reply: AgentMessageReply,
         *,
+        from_cursor: StreamCursor,
         on_item: OnItemCallback[T],
         timeout: float | None,
         stall_grace_seconds: float,
     ) -> AsyncIterator[T]:
         """Phase 2 of :meth:`send_message`: drive the merge for one submitted turn.
 
-        Reads from ``reply.accepted_offset`` and skips to ``reply.turn_id``'s ``turn_started``,
+        Reads from the tail captured before submission and skips to ``reply.turn_id``'s
+        ``turn_started``,
         then merges live (arrival-order interleaving) until that turn's ``turn_end`` on the ROOT
         agent — by which point, via the close gate, every subagent turn it triggered has already
         been emitted. The turn's own terminal error is surfaced as an :class:`AgentTurnError`
@@ -491,8 +513,9 @@ class AgentClient:
 
         merged = merge_stream(
             client=self._temporal,
+            backend_factory=self._backend_factory,
             root_workflow_id=self._workflow_id,
-            root_from_offset=reply.accepted_offset,
+            root_from_cursor=from_cursor,
             skip_until_turn_id=target_turn_id,
             select=select_live,
             should_stop=should_stop,
@@ -525,23 +548,23 @@ class AgentClient:
                 AgentTurnTimeout(
                     f"turn {reply.turn_number} did not complete within {timeout}s"
                 ),
-                -1,
+                from_cursor,
             )
 
     async def attach(
         self,
         *,
         on_item: OnItemCallback[T],
-        from_offset: int = 0,
+        from_offset: StreamCursor = BEGINNING_STREAM_CURSOR,
         subagent_stall_grace_seconds: float = DEFAULT_STALL_GRACE_SECONDS,
     ) -> AsyncIterator[T]:
         """Reattach to a session and stream it as ONE merged logical stream, then tail live.
 
         ``from_offset`` controls where the merge starts (and ANY offset is valid — see below):
 
-        * **0 (default)** — full replay from the beginning, for a blank-slate consumer (a freshly
-          loaded tab) that has no prior state. Replays past events deterministically (mount-order
-          interleaving), then follows live until the agent is idle.
+        * **``"B"`` (default)** — the provider-neutral beginning cursor, for a blank-slate
+          consumer (a freshly loaded tab) that has no prior state. Replays past events
+          deterministically (mount-order interleaving), then follows live until the agent is idle.
         * **any prior resume offset** — resume: stream from exactly that ROOT offset onward, so
           already-seen events are not re-sent. The one consequence of resuming *inside* a subagent's
           turn (an offset after that subagent's ``subagent_message_sent`` but before its
@@ -565,7 +588,7 @@ class AgentClient:
           parent's reply and everything after it still flow. This is intended: a scalar root offset
           is a *valid* resume point (never a broken ordering, never a wedge), but it is lossless only
           at root-event granularity. A consumer that needs every subagent event across a mid-turn
-          reconnect should re-attach from 0.
+          reconnect should re-attach from ``"B"``.
 
         Returns immediately (yields nothing) if there's nothing new to stream.
 
@@ -578,17 +601,34 @@ class AgentClient:
         root event that existed when it started. This lets a replay that ends with
         out-of-band operator commands drain them without waiting for a nonexistent turn.
         """
-        stream = WorkflowStreamClient.create(self._temporal, self._workflow_id)
+        handle = self._temporal.get_workflow_handle(self._workflow_id)
+        description = await handle.describe()
+        head = await self.event_tail()
+        workflow_closed = description.status != WorkflowExecutionStatus.RUNNING
+        if workflow_closed:
+            # A closed workflow cannot produce more records. Avoid querying it: external output is
+            # independently replayable after workflow completion, while a cold workflow query may
+            # require replaying history on a worker that is no longer polling this task queue.
+            if head == from_offset:
+                return self._empty()
+            return self._merged_attach(
+                on_item=on_item,
+                from_offset=from_offset,
+                stop_at_root_cursor=head,
+                stall_grace_seconds=subagent_stall_grace_seconds,
+                workflow_closed=True,
+            )
+
         status = await self.get_status()
-        head = await stream.get_offset()
         # Already caught up (no events past from_offset) and the agent is idle — nothing to stream.
-        if head <= from_offset and not status.turn_active and not status.pending_turns:
+        if head == from_offset and not status.turn_active and not status.pending_turns:
             return self._empty()
         return self._merged_attach(
             on_item=on_item,
             from_offset=from_offset,
-            stop_at_root_offset=head,
+            stop_at_root_cursor=head,
             stall_grace_seconds=subagent_stall_grace_seconds,
+            workflow_closed=False,
         )
 
     async def _empty(self) -> AsyncIterator[T]:
@@ -600,16 +640,18 @@ class AgentClient:
         self,
         *,
         on_item: OnItemCallback[T],
-        from_offset: int,
-        stop_at_root_offset: int,
+        from_offset: StreamCursor,
+        stop_at_root_cursor: StreamCursor,
         stall_grace_seconds: float,
+        workflow_closed: bool,
     ) -> AsyncIterator[T]:
         """Phase 2 of :meth:`attach`: drive the merge from ``from_offset`` to the next idle point.
 
-        No skip at any offset: the merge starts the root exactly at ``from_offset`` (0 = replay
-        everything). Resuming mid-stream is safe — a subagent whose turn began before ``from_offset``
-        is never mounted (its detail is absent, its ``reply_received`` released by the merge's
-        unmounted-stuck give-up), while subagents dispatched at/after it merge normally."""
+        No skip at any cursor: the merge starts the root exactly at ``from_offset``
+        (``"B"`` = replay everything). Resuming mid-stream is safe — a subagent whose turn began
+        before ``from_offset`` is never mounted (its detail is absent, its ``reply_received``
+        released by the merge's unmounted-stuck give-up), while subagents dispatched at/after it
+        merge normally."""
         root_id = self._workflow_id
         highest_completed_turn = 0
 
@@ -625,7 +667,11 @@ class AgentClient:
                 return False
             if ev.event.type == AgentEventType.TURN_END:
                 highest_completed_turn = max(highest_completed_turn, ev.turn_number)
-            if cursor.head_offset + 1 < stop_at_root_offset:
+            if workflow_closed:
+                # The external subscription ends at the topic's FINISH record. Let it drain to
+                # that boundary rather than querying an already-closed workflow for liveness.
+                return False
+            if not cursor.has_reached(stop_at_root_cursor):
                 return False
             try:
                 status = await self.get_status()
@@ -639,8 +685,9 @@ class AgentClient:
 
         merged = merge_stream(
             client=self._temporal,
+            backend_factory=self._backend_factory,
             root_workflow_id=root_id,
-            root_from_offset=from_offset,
+            root_from_cursor=from_offset,
             skip_until_turn_id=None,
             select=select_replay,
             should_stop=should_stop,
@@ -648,3 +695,23 @@ class AgentClient:
         )
         async for ev, resume_offset in merged:
             yield on_item(ev, resume_offset)
+
+    async def event_tail(self) -> StreamCursor:
+        """Snapshot the committed boundary of this agent's output topic.
+
+        The returned serialized cursor is suitable for :meth:`attach` and can
+        be persisted or sent over JSON APIs without interpreting the provider's
+        offset token.
+        """
+        backend = self._backend_factory()
+        try:
+            reader = await ExternalOutputStreamClient.connect(
+                backend=backend,
+                workflow=await workflow_chain_key(self._temporal, self._workflow_id),
+                client=self._temporal,
+            )
+            return (
+                await reader.topic(TURN_EVENTS_TOPIC, type=AgentEvent).tail()
+            ).serialize()
+        finally:
+            await close_external_stream_backend(backend)

@@ -13,11 +13,14 @@ import uuid
 import pytest_asyncio
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from temporal_agent_harness.harness import agent
+from temporal_agent_harness.harness import (
+    agent,
+    create_external_stream_backend,
+    subscribe_external_output,
+)
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
     TURN_EVENTS_TOPIC,
@@ -42,6 +45,7 @@ async def client_and_queue():
         env.client,
         task_queue=task_queue,
         workflows=[CodeModeE2EParentWorkflow],
+        external_stream_backend=create_external_stream_backend(),
         # The generic Code Mode stepping activities + the durable bodies of the host tools
         # (registered the normal way, like any @agent.activity_tool_defn).
         activities=[
@@ -72,11 +76,10 @@ async def _run(
         result_type=AgentMessageReply,
     )
 
-    stream = WorkflowStreamClient.create(client, handle.id)
     reply: str | None = None
     events: list[AgentEvent] = []
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC], from_offset=0, result_type=AgentEvent
+    async for item in subscribe_external_output(
+        client, handle.id, TURN_EVENTS_TOPIC, type=AgentEvent
     ):
         envelope: AgentEvent = item.data
         events.append(envelope)

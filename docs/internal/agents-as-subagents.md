@@ -56,8 +56,8 @@ adapter that lets one harness agent drive another through that same standardized
   **deletes this module entirely** (along with `Generic[M]`, `add_accepted_message`, and the
   sentinel-key construction guard): with `M`-accumulation gone, the builder was pure
   ceremony. The runner is now constructed directly —
-  `AgentWorkflowRunner(config, stream=..., approval_policy_default=..., enable_message_queuing_default=False, custom_approval_fallback=None)` — with the config-vs-default resolution folded into `__init__`
-  (`stream` + `approval_policy_default` are required kwargs). Accepted messages are
+  `AgentWorkflowRunner(config, approval_policy_default=..., enable_message_queuing_default=False, custom_approval_fallback=None)` — with the config-vs-default resolution folded into `__init__`
+  (`approval_policy_default` is required). Accepted messages are
   discovered from `@agent.accepts` handler signatures.
 - `harness/agent_client.py` — `send_message()` (the one PUBLIC turn driver) does update **+**
   stream-consume in one call, composing two **private** halves: `_submit_message()` (phase 1)
@@ -211,8 +211,8 @@ Each is intended to be separable and potentially worked in its own session. Stat
 > `Turn`/`AgentRunContext`/`turns()`/`start()`/`add_accepted_message`/the `M` type param —
 > **and the whole builder**: `_runner_builder.py`, `Generic[M]`, and the sentinel-key guard
 > are deleted; the runner is constructed directly,
-> `AgentWorkflowRunner(config, stream=..., approval_policy_default=..., enable_message_queuing_default=False, custom_approval_fallback=None)`,
-> with config-vs-default resolution in `__init__` (`stream` + `approval_policy_default`
+> `AgentWorkflowRunner(config, approval_policy_default=..., enable_message_queuing_default=False, custom_approval_fallback=None)`,
+> with config-vs-default resolution in `__init__` (`approval_policy_default`
 > required). Protocol: `AgentMessage{type, payload, expected_turn}` envelope (the
 > `expected_turn` is folded onto it; `UserInput` deleted), `AcceptedFunction`, `TextMessage`/
 > `TextReply` built-ins (plain models, no discriminator), `AgentReply{output: dict}` (the
@@ -249,7 +249,6 @@ class QaAgentWorkflow:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(   # discovers @agent.accepts methods on this class
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.allow_inherently_safe(),
         )
 
@@ -305,7 +304,7 @@ class QaAgentWorkflow:
   the return as the typed reply, emit `turn_end` (and `AgentError` on raise — same semantics
   as the old `__aexit__`). Remove `turns()`, `Turn`, `AgentRunContext`.
 - Delete `_runner_builder.py` (and `Generic[M]` / `add_accepted_message` / sentinel key);
-  construct `AgentWorkflowRunner(config, stream=..., approval_policy_default=..., ...)`
+  construct `AgentWorkflowRunner(config, approval_policy_default=..., ...)`
   directly with the config-vs-default resolution in `__init__`.
 - **`agent_interface`** (renamed from `accepted_message_types`): the query returns
   `list[AcceptedFunction]` — `{name (function), description (handler docstring),
@@ -442,13 +441,13 @@ plus the `(type, payload, expected_turn)` to send; it builds an `AgentClient(cli
 child_workflow_id)` against the **child**, NOT the parent.
 
 - **On entry, read `activity.info().heartbeat_details`:**
-  - *not yet sent* → capture the child's stream head offset
-    (`WorkflowStreamClient.create(client, child_id).get_offset()`), do the
+  - *not yet sent* → capture the child's external topic tail cursor
+    (`AgentClient(client, child_id).event_tail()`), do the
     `send_agent_message` update, then `activity.heartbeat({sent: True, turn_id, turn_number,
     consumed_offset: head})`.
   - *already sent* (retry landed after the send) → **skip the send**; resume from the
     heartbeated `consumed_offset`.
-- **Then stream:** subscribe to the child's stream from the offset, filter to `turn_id`,
+- **Then stream:** subscribe to the child's external output topic from the cursor, filter to `turn_id`,
   capture `AgentReply.output`, terminate on that turn's `turn_end` (surface an `error` event
   as failure — mirror `AgentClient.send_message`'s reduce loop, the exact template).
   **Heartbeat `{… consumed_offset: latest}` every N sec** (default ~5s); the dispatching tool
@@ -465,10 +464,8 @@ child_workflow_id)` against the **child**, NOT the parent.
   `DuplicateMessage` (same `turn_id`) and the activity continues — so the heartbeat memo
   degrades to a pure offset-resume optimization.
 - **[RESOLVED — 2026-06-15] Activity → Temporal `Client` via a closed-over client on a
-  class.** A `temporalio.client.Client` is needed inside the activity for subscribe **and**
-  update against the *child* — `WorkflowStreamClient.from_within_activity()` does **NOT** work
-  here (it infers the *running activity's own / parent* workflow and takes no `workflow_id`;
-  the child stream needs `WorkflowStreamClient.create(client, child_id)`). We improve on the
+  class.** A `temporalio.client.Client` is needed inside the activity for the child update and
+  external-output subscription. We improve on the
   `tools.py` module-global precedent: the activity is a method of `SubagentActivities`, whose
   `__init__(client)` closes over the worker's client. No module-level mutable global; the
   client is an explicit construction dependency. The worker registers the bound method; a

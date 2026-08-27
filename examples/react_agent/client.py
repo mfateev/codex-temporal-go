@@ -146,7 +146,7 @@ async def _observe(
 ) -> None:
     """Render a turn's events from an SSE stream until it ends.
 
-    ``open_after`` gates output for an *attach* stream that replays history from offset 0: suppress
+    ``open_after`` gates output for an *attach* stream that replays history from cursor ``"B"``: suppress
     everything until a ``callback_resolved`` for one of those tool_ids is seen (an answer we just
     submitted), then render forward. ``None`` (the chat path) renders immediately.
     """
@@ -211,11 +211,11 @@ async def _answer_open_questions(http: httpx.AsyncClient, session_id: str) -> bo
         print("  ✓ submitted")
 
     # The turn only proceeds once EVERY parked callback in the batch is answered, so watch it now.
-    # We didn't start this turn, so observe it via /api/attach; from_offset=0 replays history, and
+    # We didn't start this turn, so observe it via /api/attach; from_offset="B" replays history, and
     # _observe suppresses it until our answers resolve (fine for an example — a resume_offset cursor
     # would trim the replay). Any follow-up ask_user in the same turn is handled inline by _observe.
     async with http.stream(
-        "GET", "/api/attach", params={"session_id": session_id, "from_offset": 0}
+        "GET", "/api/attach", params={"session_id": session_id, "from_offset": "B"}
     ) as resp:
         await _observe(http, session_id, resp, open_after=answered)
     return True

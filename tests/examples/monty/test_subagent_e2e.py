@@ -17,9 +17,13 @@ import uuid
 import pytest_asyncio
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+
+from temporal_agent_harness.harness import (
+    create_external_stream_backend,
+    subscribe_external_output,
+)
 
 from temporal_agent_harness.harness.agent_protocol import (
     AGENT_ID_LENGTH,
@@ -63,6 +67,7 @@ async def client_and_queue():
             ApprovalGatedSubagentParentWorkflow,
             MontyDynamicAgentWorkflow,
         ],
+        external_stream_backend=create_external_stream_backend(),
         activities=[
             *activities.ALL_ACTIVITIES,
             *CODE_MODE_ACTIVITIES,
@@ -101,11 +106,10 @@ async def _drive(
         result_type=AgentMessageReply,
     )
 
-    stream = WorkflowStreamClient.create(client, handle.id)
     reply: str | None = None
     events: list[AgentEvent] = []
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC], from_offset=0, result_type=AgentEvent
+    async for item in subscribe_external_output(
+        client, handle.id, TURN_EVENTS_TOPIC, type=AgentEvent
     ):
         envelope: AgentEvent = item.data
         events.append(envelope)
@@ -329,10 +333,9 @@ async def test_operator_command_can_target_live_subagent_directly(client_and_que
     child_client = AgentClient(client, child_workflow_id)
     result = await child_client.execute_operator_command("status")
 
-    stream = WorkflowStreamClient.create(client, child_workflow_id)
     operator_events: list[AgentEvent] = []
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC], from_offset=0, result_type=AgentEvent
+    async for item in subscribe_external_output(
+        client, child_workflow_id, TURN_EVENTS_TOPIC, type=AgentEvent
     ):
         envelope: AgentEvent = item.data
         if envelope.event.type in {
@@ -352,13 +355,9 @@ async def test_operator_command_can_target_live_subagent_directly(client_and_que
     assert operator_events[-1].event.text == result.text
 
 
-async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queue):
-    # The REAL graceful-degradation path (distinct from the LIVE merge above, which reads the
-    # child's detail in real time BEFORE the end-of-turn stop completes the child): here we drive
-    # the subagent and STOP it, so by the time we REATTACH it is a COMPLETED workflow. workflow_streams
-    # cannot read a completed workflow's stream, so the merge cannot mount the stopped child on
-    # replay — it must DEGRADE rather than wedge: release the child's close gate so the parent renders
-    # to its turn_end, and surface a non-fatal subagent_stream_unavailable marker for the child.
+async def test_attach_after_stopped_subagent_replays_external_output(client_and_queue):
+    # External output survives child Workflow completion, so a later replay can still mount and
+    # render the stopped subagent's complete turn detail.
     client, task_queue = client_and_queue
     parent_id, _live = await _merged_send(
         client, task_queue, [_const_script(42), _const_script(99)], stop=True
@@ -368,7 +367,7 @@ async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queu
     agent_client = AgentClient(client, parent_id)
     attached: list[AgentEvent] = []
     async for item in await agent_client.attach(
-        on_item=lambda it, _o: it, from_offset=0, subagent_stall_grace_seconds=2.0
+        on_item=lambda it, _o: it, from_offset="B", subagent_stall_grace_seconds=2.0
     ):
         if isinstance(item, AgentEvent):
             attached.append(item)
@@ -382,26 +381,24 @@ async def test_attach_after_stopped_subagent_degrades_gracefully(client_and_queu
     assert len(child_ids) == 1
     child_id = next(iter(child_ids))
 
-    # The parent stream rendered FULLY despite the unreadable child — its turn_end is present (the
-    # dead child's never-coming turn_end did not strand the parent's tail behind the close gate).
+    # The parent and completed child's stream both replay fully.
     parent_events = [e for e in attached if e.agent_id != child_id]
     assert parent_events[-1].event.type == AgentEventType.TURN_END
 
-    # A non-fatal marker was surfaced for the stopped subagent (its own turn DETAIL is forgone), and
-    # no actual child turn detail leaked onto the merged stream.
     markers = [
         e
         for e in attached
         if e.event.type == AgentEventType.SUBAGENT_STREAM_UNAVAILABLE
     ]
-    assert markers and all(m.event.subagent_id == child_id for m in markers)
+    assert not markers
     child_detail = [
         e
         for e in attached
         if e.agent_id == child_id
         and e.event.type != AgentEventType.SUBAGENT_STREAM_UNAVAILABLE
     ]
-    assert not child_detail
+    assert child_detail
+    assert child_detail[-1].event.type == AgentEventType.TURN_END
 
 
 async def test_gated_concurrent_dispatches_get_distinct_turn_numbers(client_and_queue):
@@ -430,11 +427,10 @@ async def test_gated_concurrent_dispatches_get_distinct_turn_numbers(client_and_
     )
 
     agent_client = AgentClient(client, handle.id)
-    stream = WorkflowStreamClient.create(client, handle.id)
     approved: set[str] = set()
     messaged: list[AgentEvent] = []
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC], from_offset=0, result_type=AgentEvent
+    async for item in subscribe_external_output(
+        client, handle.id, TURN_EVENTS_TOPIC, type=AgentEvent
     ):
         ev = item.data.event
         # Approve each gated send as soon as it asks — independent of arrival order.

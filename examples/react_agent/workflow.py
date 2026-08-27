@@ -31,7 +31,6 @@ from __future__ import annotations
 import os
 
 from temporalio import workflow
-from temporalio.contrib.workflow_streams import WorkflowStream
 
 with workflow.unsafe.imports_passed_through():
     from agents import Agent as OpenAIAgent
@@ -93,7 +92,6 @@ class ReactAgentWorkflow:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             # No human-in-the-loop yet — don't gate tool calls (demo4-hitl will tighten this).
             # A caller can still override per session via AgentConfig.approval_policy.
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),

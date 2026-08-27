@@ -1,5 +1,5 @@
 export type UnixEpochSeconds = number;
-export type ResumeOffset = number;
+export type ResumeOffset = string;
 export type StreamOffset = ResumeOffset;
 export type WorkflowId = string;
 export type TurnId = string;
@@ -152,7 +152,6 @@ export interface ChatRequest {
 export interface SubmitMessageResponse {
   turn_number: number;
   turn_id: TurnId;
-  accepted_offset: StreamOffset;
   pending: boolean;
 }
 
@@ -371,7 +370,7 @@ export interface SubagentMessageSentEvent
   workflow_id: string;
   function: string;
   subagent_turn: number;
-  from_offset: number;
+  from_offset: StreamOffset;
 }
 
 export interface SubagentReplyReceivedEvent

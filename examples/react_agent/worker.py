@@ -47,6 +47,7 @@ from temporal_agent_harness.ai_sdks.openai_agents_harness import (
     harness_observer_factory,
     stream_to_provider,
 )
+from temporal_agent_harness.harness import create_external_stream_backend
 
 from .tool_activities import ALL_ACTIVITIES
 from .workflow import TASK_QUEUE, ReactAgentWorkflow
@@ -111,6 +112,7 @@ async def main() -> None:
         client,
         task_queue=task_queue,
         workflows=[ReactAgentWorkflow],
+        external_stream_backend=create_external_stream_backend(),
         # The four location/weather tool activity bodies. The OpenAI model activities
         # (incl. invoke_model_activity_streaming) are registered by the plugin. The ask_user
         # callback tool has no activity body — it's fulfilled by the client — so nothing to

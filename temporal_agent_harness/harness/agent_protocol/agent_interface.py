@@ -334,19 +334,14 @@ class AgentMessageReply:
     ``pending`` is True if the message was queued behind an active
     turn rather than being processed immediately.
 
-    ``accepted_offset`` is the agent's stream offset captured at the instant the update was
-    accepted (the log head BEFORE this turn publishes anything). It is internal plumbing for the
-    client's stream-merge: a caller starts reading the merged logical stream from here and
-    discards events until this turn's ``turn_started`` — a quiescent point with no in-flight
-    subagent brackets. It is a read-start *hint* (its only requirement is to be ``<=`` this
-    turn's ``turn_started`` offset, which capture-at-acceptance guarantees); the BFF/UI never
-    sees or stores it. For a queued message it is the head mid the active prior turn; the
-    skip-to-``turn_started`` preamble normalizes that.
+    External stream positioning is intentionally absent. A client snapshots the output
+    topic's tail before submitting the update, then scans from that boundary for the returned
+    ``turn_id``. This keeps provider offsets opaque and avoids asking Workflow code to inspect
+    external storage.
     """
 
     turn_number: int
     turn_id: str
-    accepted_offset: int = 0
     pending: bool = False
 
 

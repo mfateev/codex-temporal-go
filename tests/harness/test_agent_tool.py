@@ -19,11 +19,15 @@ import pytest_asyncio
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
-from temporal_agent_harness.harness import AgentWorkflowRunner, agent
+from temporal_agent_harness.harness import (
+    AgentWorkflowRunner,
+    agent,
+    create_external_stream_backend,
+    subscribe_external_output,
+)
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
     TURN_EVENTS_TOPIC,
@@ -69,7 +73,6 @@ class ToolProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -109,6 +112,7 @@ async def client_and_queue():
         env.client,
         task_queue=task_queue,
         workflows=[ToolProbeAgent],
+        external_stream_backend=create_external_stream_backend(),
         activities=[agent.tool_activity(echo_activity_tool)],
         workflow_runner=UnsandboxedWorkflowRunner(),
     ):
@@ -121,13 +125,9 @@ async def client_and_queue():
 async def _collect_until_turn_end(
     client: Client, workflow_id: str
 ) -> list[AgentEvent]:
-    stream = WorkflowStreamClient.create(client, workflow_id)
     events: list[AgentEvent] = []
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
+    async for item in subscribe_external_output(
+        client, workflow_id, TURN_EVENTS_TOPIC, type=AgentEvent
     ):
         envelope: AgentEvent = item.data
         events.append(envelope)

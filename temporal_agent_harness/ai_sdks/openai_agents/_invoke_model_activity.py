@@ -214,7 +214,7 @@ class StreamingActivityModelInput(ActivityModelInput, total=False):
     """Opaque per-call routing token resolved on the workflow side (see
     ``ModelActivityParameters.stream_to_provider`` / ``streaming_topic``). The
     activity hands it, unexamined, to its configured observer factory; a plain
-    ``str`` with no factory is treated as a ``WorkflowStream`` topic name."""
+    ``str`` with no factory is treated as an external output topic name."""
 
     streaming_batch_interval: timedelta
 
@@ -346,8 +346,8 @@ class ModelActivity:
         ``observer_factory``, when given, turns each streamed model call's
         opaque routing token into a fresh live observer (see
         :func:`temporal_agent_harness.ai_sdks.integration_helpers.select_observer`).
-        Left ``None``, streaming falls back to publishing raw events to a
-        ``WorkflowStream`` topic named by the token (today's behavior).
+        Left ``None``, streaming falls back to publishing raw events to an
+        external output topic named by the token.
         """
         self._model_provider = model_provider or OpenAIProvider(
             openai_client=AsyncOpenAI(max_retries=0)
@@ -398,7 +398,7 @@ class ModelActivity:
         request's opaque ``stream_to`` token (via ``select_observer``): a
         configured ``observer_factory`` translates events into the embedding
         runtime's own vocabulary, while the default (no factory, ``str``
-        token) republishes raw events to a ``WorkflowStream`` topic so
+        token) republishes raw events to an external output topic so
         external consumers (UIs, tracing, etc.) observe them as they arrive.
         The collected-and-returned list is unaffected either way.
 

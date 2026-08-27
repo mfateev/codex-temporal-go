@@ -21,11 +21,12 @@
 # (It does publish ONE marker of its own onto the PARENT's stream — the SubagentMessageSent
 # dispatch event, when it actually sends the message — but that is the parent's own record, not
 # any of the child's events; see _publish_dispatch.) A subagent's stream is never mirrored onto
-# a parent's. Collecting multiple agents' streams for a UI is a future client concern.
+# a parent's. The client-side stream merge mounts these independent topics on demand.
 #
 # DESIGN — Temporal Client: the activity needs a ``Client`` to talk to
-# the *child* (both the ``send_agent_message`` update and the stream subscribe). It can't use
-# ``WorkflowStreamClient.from_within_activity()`` (that targets the activity's own parent).
+# the *child* (both the ``send_agent_message`` update and the external output subscription).
+# Publishing the one parent-side dispatch marker uses an ``ExternalOutputStreamProducer``
+# bound explicitly to the parent Workflow chain carried in the request.
 # So this is a CLASS that closes over the worker's client; register the bound method as the
 # activity (``activities=[SubagentActivities(client).run_subagent_turn]``). A future harness
 # worker plugin will instantiate it from the worker's client automatically.
@@ -35,13 +36,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import timedelta
 from typing import Any
 
 from pydantic import BaseModel
 from temporalio import activity
 from temporalio.client import Client, WorkflowUpdateFailedError
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
+from temporalio.contrib.external_workflow_streams import (
+    Cursor,
+    ExternalOutputStreamClient,
+)
 from temporalio.exceptions import ApplicationError
 
 from temporal_agent_harness.harness.agent_client import (
@@ -60,6 +63,13 @@ from temporal_agent_harness.harness.agent_protocol import (
     SubagentTurnResult,
 )
 from temporal_agent_harness.harness.agent_workflow import AgentWorkflowRunner
+from temporal_agent_harness.harness.external_streams import (
+    ExternalStreamBackendFactory,
+    close_external_stream_backend,
+    create_external_stream_backend,
+    deserialize_stream_cursor,
+    workflow_chain_key,
+)
 
 
 class _TurnProgress(BaseModel):
@@ -75,7 +85,7 @@ class _TurnProgress(BaseModel):
     sent: bool
     turn_id: str
     turn_number: int
-    consumed_offset: int
+    consumed_offset: str
 
 
 class SubagentActivities:
@@ -92,8 +102,14 @@ class SubagentActivities:
     worker's client automatically.
     """
 
-    def __init__(self, client: Client) -> None:
+    def __init__(
+        self,
+        client: Client,
+        *,
+        backend_factory: ExternalStreamBackendFactory = create_external_stream_backend,
+    ) -> None:
         self._client = client
+        self._backend_factory = backend_factory
 
     @activity.defn(name=RUN_SUBAGENT_TURN_ACTIVITY)
     async def run_subagent_turn(self, req: RunSubagentTurnInput) -> SubagentTurnResult:
@@ -115,7 +131,11 @@ class SubagentActivities:
         * the turn ended in an error (``SubagentTurnError``);
         * the turn ended with no reply (``SubagentNoReply``).
         """
-        client = AgentClient(self._client, req.child_workflow_id)
+        client = AgentClient(
+            self._client,
+            req.child_workflow_id,
+            backend_factory=self._backend_factory,
+        )
 
         # "Already sent?" memo: a retry that landed after the send resumes consuming from the
         # heartbeated offset instead of re-submitting the turn. (Best-effort, NOT fully
@@ -176,36 +196,42 @@ class SubagentActivities:
         subagent streams into one logical view is a separate CLIENT-side concern (``stream_merge``);
         an activity that gated on a grandchild's ``turn_end`` (a turn it never mounts) would wedge.
         """
-        stream = WorkflowStreamClient.create(self._client, req.child_workflow_id)
         output: dict[str, Any] = {}
         got_reply = False
-        async for item in stream.subscribe(
-            topics=[TURN_EVENTS_TOPIC],
-            from_offset=progress.consumed_offset,
-            result_type=AgentEvent,
-            poll_cooldown=timedelta(milliseconds=10),
-        ):
-            # Advance the resume offset for EVERY item seen (mutated in place so the background
-            # heartbeat re-sends the latest), then act only on our turn's events.
-            progress.consumed_offset = item.offset + 1
-            envelope: AgentEvent = item.data
-            if envelope.turn_id != progress.turn_id:
-                continue
-            payload = envelope.event
-            if payload.type == AgentEventType.ERROR:
-                # Carry the child's ACTUAL accepted turn number so the parent closes the bracket
-                # on the same turn the dispatch marker opened (see _accepted_turn_from_error).
-                raise ApplicationError(
-                    payload.message or "subagent turn failed",
-                    {"subagent_turn": progress.turn_number},
-                    type="SubagentTurnError",
-                    non_retryable=True,
-                )
-            if payload.type == AgentEventType.REPLY:
-                output = payload.output
-                got_reply = True
-            if payload.type == AgentEventType.TURN_END:
-                break
+        backend = self._backend_factory()
+        try:
+            reader = await ExternalOutputStreamClient.connect(
+                backend=backend,
+                workflow=await workflow_chain_key(
+                    self._client, req.child_workflow_id
+                ),
+                client=self._client,
+            )
+            events = reader.topic(TURN_EVENTS_TOPIC, type=AgentEvent)
+            async for item in events.subscribe(
+                after=deserialize_stream_cursor(progress.consumed_offset)
+            ):
+                # Advance the opaque provider cursor for EVERY item seen (mutated in place so
+                # the background heartbeat re-sends the latest), then inspect only our turn.
+                progress.consumed_offset = Cursor(item.offset).serialize()
+                envelope: AgentEvent = item.data
+                if envelope.turn_id != progress.turn_id:
+                    continue
+                payload = envelope.event
+                if payload.type == AgentEventType.ERROR:
+                    raise ApplicationError(
+                        payload.message or "subagent turn failed",
+                        {"subagent_turn": progress.turn_number},
+                        type="SubagentTurnError",
+                        non_retryable=True,
+                    )
+                if payload.type == AgentEventType.REPLY:
+                    output = payload.output
+                    got_reply = True
+                if payload.type == AgentEventType.TURN_END:
+                    break
+        finally:
+            await close_external_stream_backend(backend)
         return output, got_reply
 
     @asynccontextmanager
@@ -290,7 +316,7 @@ class SubagentActivities:
         async with AgentWorkflowRunner.publisher_from_activity(
             req.parent_stream_context
         ) as publisher:
-            publisher.publish(
+            await publisher.publish(
                 SubagentMessageSent(
                     subagent_id=req.handle,
                     agent_key=req.agent_key,

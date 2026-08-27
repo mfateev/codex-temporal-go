@@ -20,7 +20,6 @@ in ``agents.toml`` and driven by the packaged web app. See ``README.md``.
 from __future__ import annotations
 
 from temporalio import workflow
-from temporalio.contrib.workflow_streams import WorkflowStream
 
 with workflow.unsafe.imports_passed_through():
     from pydantic_ai import Agent
@@ -92,7 +91,6 @@ class PydanticAIHelloAgentWorkflow:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             # Hello-world stance: don't gate tool calls. A caller can tighten this per session via
             # AgentConfig.approval_policy.
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),

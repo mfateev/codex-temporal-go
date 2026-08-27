@@ -78,7 +78,7 @@ def google_genai_client(
         runner: Optional. The workflow's
             :class:`harness.agent_workflow.AgentWorkflowRunner`. When
             provided, streamed ``generate_content`` calls publish
-            ``reply_delta`` events to the workflow's ``WorkflowStream``
+            ``reply_delta`` events to the workflow's external output topic
             from inside the streaming activity, tagged with the runner's
             current turn id. Without it, streaming still works — chunks
             just don't surface as fine-grained UI deltas.

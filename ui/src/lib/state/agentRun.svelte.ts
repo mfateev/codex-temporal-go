@@ -5,6 +5,7 @@ import type {
   AgentSseFrame,
   OperatorCommand,
   OperatorCommandResponse,
+  ResumeOffset,
   WorkflowExecutionState
 } from "$lib/api/types";
 import type { AgentApi } from "$lib/api/client";
@@ -229,14 +230,14 @@ export class AgentRunController {
   sessions = $state<Session[]>([]);
   session = $state<Session | null>(null);
   expectedTurn = $state(1);
-  lastResumeOffset = $state(0);
+  lastResumeOffset = $state("B");
   #streamVersion = 0;
   #connectionVersion = 0;
   #sendVersion = 0;
   #streamAbort: AbortController | null = null;
   #interfaceRequests = new Set<string>();
   #operatorInterfaceRequests = new Set<string>();
-  #workflowResumeOffsets = new Map<string, number>();
+  #workflowResumeOffsets = new Map<string, ResumeOffset>();
   #workflowAttachAbort = new Map<string, AbortController>();
   #frameKeys = new Set<string>();
   #frameCacheTimer: number | null = null;
@@ -550,9 +551,9 @@ export class AgentRunController {
     this.#applyWorkflowExecutionState(state);
   }
 
-  #resumeOffsetForWorkflow(workflowId: string): number {
+  #resumeOffsetForWorkflow(workflowId: string): ResumeOffset {
     if (workflowId === this.session?.workflow_id) return this.lastResumeOffset;
-    return this.#workflowResumeOffsets.get(workflowId) ?? 0;
+    return this.#workflowResumeOffsets.get(workflowId) ?? "B";
   }
 
   #operatorTargets(): OperatorTarget[] {
@@ -812,7 +813,7 @@ export class AgentRunController {
       await this.#refreshWorkflowExecutionState(session.workflow_id);
       if (!this.#isCurrentConnection(connectionVersion)) return;
       if (this.#isWorkflowClosed(session.workflow_id)) return;
-      await this.attach(0);
+      await this.attach("B");
     } catch (error) {
       if (this.#isCurrentConnection(connectionVersion) && !isAbortError(error)) {
         this.connectionError =
@@ -1137,11 +1138,11 @@ export class AgentRunController {
     this.frames = [];
     this.observedSubagents = [];
     this.#frameKeys = new Set<string>();
-    this.#workflowResumeOffsets = new Map<string, number>();
+    this.#workflowResumeOffsets = new Map<string, ResumeOffset>();
     this.viewIndex = 0;
     this.following = false;
     this.expectedTurn = 1;
-    this.lastResumeOffset = 0;
+    this.lastResumeOffset = "B";
   }
 
   #appendFrame(
@@ -1165,24 +1166,15 @@ export class AgentRunController {
 
     if (
       "resume_offset" in frame.data &&
-      typeof frame.data.resume_offset === "number"
+      typeof frame.data.resume_offset === "string"
     ) {
       const resumeOffsetOwner =
         options.sourceWorkflowId ?? (isRootFrame ? publisherWorkflowId : undefined);
       if (resumeOffsetOwner) {
-        this.#workflowResumeOffsets.set(
-          resumeOffsetOwner,
-          Math.max(
-            this.#workflowResumeOffsets.get(resumeOffsetOwner) ?? 0,
-            frame.data.resume_offset
-          )
-        );
+        this.#workflowResumeOffsets.set(resumeOffsetOwner, frame.data.resume_offset);
       }
       if (isRootFrame) {
-        this.lastResumeOffset = Math.max(
-          this.lastResumeOffset,
-          frame.data.resume_offset
-        );
+        this.lastResumeOffset = frame.data.resume_offset;
       }
     }
     if (

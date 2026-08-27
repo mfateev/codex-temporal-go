@@ -1,7 +1,7 @@
 # ABOUTME: End-to-end integration tests for AgentServiceHandler against a real dev server.
 #
-# Needs a real dev server, not the time-skipping test server — update-with-callback requires
-# dynamic config the time-skipping server doesn't have (see _DEV_SERVER_ARGS below).
+# Needs a real dev server, not the time-skipping test server, because these tests exercise
+# Temporal-backed Nexus operations end to end (see _DEV_SERVER_ARGS below).
 #
 # Run with: uv run pytest tests/nexus_agent_adapter/test_handler_integration.py -v
 
@@ -16,11 +16,14 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.api.enums.v1 import EventType
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from temporal_agent_harness.harness import AgentWorkflowRunner, agent
+from temporal_agent_harness.harness import (
+    AgentWorkflowRunner,
+    agent,
+    create_external_stream_backend,
+)
 from temporal_agent_harness.harness.agent_protocol import AgentConfig, ToolApprovalPolicy
 from temporal_agent_harness.nexus_agent_adapter.generated import (
     AgentService as AgentServiceDefinition,
@@ -34,9 +37,7 @@ from temporal_agent_harness.nexus_agent_adapter.generated import (
 )
 from temporal_agent_harness.nexus_agent_adapter.handler import AgentServiceHandler, Config
 
-# Custom dev-server build with the Nexus-update-callback dynamic config surface (matches
-# sdk-python's own tests/conftest.py for PR #1631 — the stock time-skipping test server and
-# ordinary dev-server releases don't have these flags).
+# Custom dev-server build with the system Nexus-operation dynamic config surface.
 _DEV_SERVER_VERSION = "v1.7.1-system-nexus-operations"
 _DEV_SERVER_ARGS = [
     "--dynamic-config-value",
@@ -77,7 +78,6 @@ class ProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )
 
@@ -125,7 +125,7 @@ class CallerWorkflow:
             AgentServiceDefinition.poll_messages,
             PollMessagesInput(
                 session_id=input.session_id,
-                cursor=send_out.stream_head_offset or 0,
+                cursor=send_out.stream_head_offset or "B",
                 timeout_seconds=20,
             ),
         )
@@ -148,7 +148,7 @@ async def env() -> AsyncGenerator[WorkflowEnvironment, None]:
     await env.shutdown()
 
 
-async def test_poll_messages_delivers_via_async_callback(env: WorkflowEnvironment) -> None:
+async def test_poll_messages_delivers_external_output(env: WorkflowEnvironment) -> None:
     client = env.client
     endpoint_name = f"agent-endpoint-{uuid.uuid4()}"
     agent_task_queue = f"agent-{uuid.uuid4()}"
@@ -168,6 +168,7 @@ async def test_poll_messages_delivers_via_async_callback(env: WorkflowEnvironmen
         client,
         task_queue=agent_task_queue,
         workflows=[ProbeAgent],
+        external_stream_backend=create_external_stream_backend(),
     ), Worker(
         client,
         task_queue=nexus_task_queue,
@@ -192,11 +193,15 @@ async def test_poll_messages_delivers_via_async_callback(env: WorkflowEnvironmen
             "pollMessages must deliver the reply's stream items"
         )
 
-        # Proves the async callback path was taken, not a sync completion.
+        # The call still traverses the real Nexus operation lifecycle even though the
+        # handler returns its externally polled batch synchronously.
         history = await handle.fetch_history()
         op_types = {e.event_type for e in history.events}
-        assert EventType.EVENT_TYPE_NEXUS_OPERATION_STARTED in op_types
+        assert EventType.EVENT_TYPE_NEXUS_OPERATION_SCHEDULED in op_types
         assert EventType.EVENT_TYPE_NEXUS_OPERATION_COMPLETED in op_types
+        agent_handle = client.get_workflow_handle(f"probe-{session_id}")
+        await agent_handle.signal("close")
+        await agent_handle.result()
 
 
 class SendOnlyOutput(BaseModel):
@@ -245,7 +250,10 @@ async def test_send_agent_message_survives_handler_worker_restart(
     session_id = str(uuid.uuid4())
 
     async with Worker(
-        client, task_queue=agent_task_queue, workflows=[ProbeAgent]
+        client,
+        task_queue=agent_task_queue,
+        workflows=[ProbeAgent],
+        external_stream_backend=create_external_stream_backend(),
     ), Worker(
         client, task_queue=caller_task_queue, workflows=[SendOnlyCallerWorkflow]
     ):
@@ -280,6 +288,9 @@ async def test_send_agent_message_survives_handler_worker_restart(
         assert result_2.turn_number == 2, (
             "turn counter must advance after a handler worker restart"
         )
+        agent_handle = client.get_workflow_handle(f"probe-{session_id}")
+        await agent_handle.signal("close")
+        await agent_handle.result()
 
 
 class PollOnlyOutput(BaseModel):
@@ -298,7 +309,7 @@ class PollOnlyCallerWorkflow:
         )
         poll_out = await client.execute_operation(
             AgentServiceDefinition.poll_messages,
-            PollMessagesInput(session_id=input.session_id, cursor=0),
+            PollMessagesInput(session_id=input.session_id, cursor="B"),
         )
         return PollOnlyOutput(
             poll_closed=bool(poll_out.closed), poll_item_count=len(poll_out.items)
@@ -385,7 +396,6 @@ class GatedProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.always_require_approvals(),
         )
 
@@ -468,7 +478,7 @@ class FullSurfaceCallerWorkflow:
             AgentServiceDefinition.poll_messages,
             PollMessagesInput(
                 session_id=input.session_id,
-                cursor=send_out.stream_head_offset or 0,
+                cursor=send_out.stream_head_offset or "B",
                 timeout_seconds=20,
             ),
         )
@@ -503,6 +513,7 @@ async def test_full_operation_surface(env: WorkflowEnvironment) -> None:
         client,
         task_queue=agent_task_queue,
         workflows=[GatedProbeAgent],
+        external_stream_backend=create_external_stream_backend(),
     ), Worker(
         client,
         task_queue=nexus_task_queue,
@@ -527,3 +538,6 @@ async def test_full_operation_surface(env: WorkflowEnvironment) -> None:
         assert result.approve_accepted
         assert result.status_reply
         assert result.poll_item_count > 0
+        agent_handle = client.get_workflow_handle(f"gated-probe-{session_id}")
+        await agent_handle.signal("close")
+        await agent_handle.result()

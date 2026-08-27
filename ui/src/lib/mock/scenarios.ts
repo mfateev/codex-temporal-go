@@ -3,6 +3,7 @@ import type {
   AgentSseFrame,
   AgentSseEventMap,
   FileCitationAnnotation,
+  ResumeOffset,
   Session,
   TokenUsage
 } from "$lib/api/types";
@@ -54,7 +55,7 @@ let resumeOffset = 0;
 function frame<T extends keyof AgentSseEventMap>(
   event: T,
   data: Omit<AgentSseEventMap[T], "agent_id" | "resume_offset"> &
-    { agent_id?: string; resume_offset?: number }
+    { agent_id?: string; resume_offset?: ResumeOffset }
 ): AgentSseFrame {
   const agentId = data.agent_id ?? rootAgentId;
   if (agentId === rootAgentId) resumeOffset += 1;
@@ -63,7 +64,7 @@ function frame<T extends keyof AgentSseEventMap>(
     data: {
       ...data,
       agent_id: agentId,
-      resume_offset: data.resume_offset ?? resumeOffset
+      resume_offset: data.resume_offset ?? `A${resumeOffset}`
     } as AgentSseEventMap[T]
   } as AgentSseFrame;
 }
@@ -634,7 +635,7 @@ const frames: AgentSseFrame[] = [
     workflow_id: searchSubagentWorkflowId,
     function: "summarize_budget_examples",
     subagent_turn: 1,
-    from_offset: 0
+    from_offset: "B"
   }),
   frame("turn_started", {
     type: "turn_started",

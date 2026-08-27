@@ -399,10 +399,10 @@ class PollMessagesInput(pydantic.BaseModel):
     session_id: str = pydantic.Field(alias="sessionId")
     """Provider-prefixed session identifier"""
 
-    cursor: SpecInt = pydantic.Field()
+    cursor: str = pydantic.Field()
 
     timeout_seconds: float | None = pydantic.Field(default=None, alias="timeoutSeconds")
-    """How long the WorkflowStream poll update waits for new events before returning empty"""
+    """How long to wait for a new external output event before returning empty"""
 
     _OPTIONAL_NON_NULLABLE_FIELDS: typing.ClassVar[frozenset[str]] = frozenset({"timeoutSeconds", "timeout_seconds"})
 
@@ -424,15 +424,13 @@ class PollMessagesInput(pydantic.BaseModel):
 
 
 class PollMessagesOutput(pydantic.BaseModel):
-    """Mirrors WorkflowStream PollResult wire format so the async update-with-callback
-    payload decodes correctly without transformation.
-    """
+    """A batch from the agent's external output stream."""
     model_config: typing.ClassVar[pydantic.ConfigDict] = pydantic.ConfigDict(strict=True, populate_by_name=True, extra="forbid")
 
     items: list[StreamItem] = pydantic.Field()
     """Stream events since cursor; decode each as TurnEvent and map to Slack output"""
 
-    next_offset: SpecInt = pydantic.Field()
+    next_offset: str = pydantic.Field()
     """Next cursor value to use in the following pollMessages call"""
 
     more_ready: bool = pydantic.Field()
@@ -578,10 +576,8 @@ class SendMessageOutput(pydantic.BaseModel):
     turn_id: str = pydantic.Field(alias="turnId")
     """Unique ID for this turn"""
 
-    stream_head_offset: SpecInt | None = pydantic.Field(default=None, alias="streamHeadOffset")
-    """Stream log offset at message-accept time; start the first pollMessages call from
-    this offset to skip prior-turn history
-    """
+    stream_head_offset: str | None = pydantic.Field(default=None, alias="streamHeadOffset")
+    """Opaque external-stream cursor captured before message acceptance."""
 
     pending: bool | None = pydantic.Field(default=None)
     """True if the message was queued behind an active turn rather than dispatched
@@ -608,19 +604,17 @@ class SendMessageOutput(pydantic.BaseModel):
 
 
 class StreamItem(pydantic.BaseModel):
-    """One event from WorkflowStream._log. Data is base64(proto
-    Payload{encoding:json/plain, data:TurnEvent JSON}).
-    """
+    """One decoded event from the agent's external output stream."""
     model_config: typing.ClassVar[pydantic.ConfigDict] = pydantic.ConfigDict(strict=True, populate_by_name=True, extra="forbid")
 
     topic: str = pydantic.Field()
     """Stream topic name (turn_events)"""
 
     data: str = pydantic.Field()
-    """base64-encoded proto Payload containing a TurnEvent"""
+    """AgentEvent encoded as JSON"""
 
-    offset: SpecInt = pydantic.Field()
-    """Absolute position of this item in the stream"""
+    offset: str = pydantic.Field()
+    """Opaque cursor immediately after this item"""
 
     @pydantic.model_serializer(mode="wrap")
     def _serialize(

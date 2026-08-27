@@ -18,7 +18,12 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from temporalio.contrib.workflow_streams import WorkflowStreamItem
+from temporalio.contrib.external_workflow_streams import (
+    BEGINNING,
+    Cursor as ExternalCursor,
+    ExternalOutputStreamItem,
+    Offset,
+)
 
 import temporal_agent_harness.harness.stream_merge.cursor as cursor_mod
 from temporal_agent_harness.harness.agent_protocol import (
@@ -43,6 +48,18 @@ from temporal_agent_harness.harness.stream_merge import (
     select_live,
     select_replay,
 )
+
+
+def _stream_cursor(index: int) -> str:
+    """External-stream boundary before the item at ``index``."""
+    if index == 0:
+        return BEGINNING.serialize()
+    return ExternalCursor(Offset(str(index - 1))).serialize()
+
+
+def _cursor_index(cursor: str) -> int:
+    decoded = ExternalCursor.deserialize(cursor)
+    return 0 if decoded.is_beginning else int(str(decoded.offset)) + 1
 
 # ---------------------------------------------------------------------------
 # Event builders
@@ -71,7 +88,14 @@ def _te(agent_id: str, turn: int) -> AgentEvent:
     return _ev(agent_id, turn, TurnEnded())
 
 
-def _ms(agent_id: str, parent_turn: int, *, child: str, child_turn: int, from_offset: int = 0) -> AgentEvent:
+def _ms(
+    agent_id: str,
+    parent_turn: int,
+    *,
+    child: str,
+    child_turn: int,
+    from_offset: int | str = 0,
+) -> AgentEvent:
     return _ev(
         agent_id,
         parent_turn,
@@ -81,7 +105,11 @@ def _ms(agent_id: str, parent_turn: int, *, child: str, child_turn: int, from_of
             workflow_id=child,
             function="f",
             subagent_turn=child_turn,
-            from_offset=from_offset,
+            from_offset=(
+                _stream_cursor(from_offset)
+                if isinstance(from_offset, int)
+                else from_offset
+            ),
         ),
     )
 
@@ -127,7 +155,7 @@ def _tool(agent_id: str, turn: int, tid: str, *, start: bool) -> AgentEvent:
 
 
 # ---------------------------------------------------------------------------
-# Fake stream client — scripted in-memory streams, patched into cursor.py
+# Fake external output stream — scripted in-memory cursors patched into cursor.py
 # ---------------------------------------------------------------------------
 
 
@@ -159,12 +187,9 @@ class _FakeHandle:
 
     def subscribe(
         self,
-        topics: Any = None,
-        from_offset: int = 0,
         *,
-        result_type: Any = None,
-        poll_cooldown: Any = None,
-    ) -> AsyncIterator[WorkflowStreamItem[AgentEvent]]:
+        after: ExternalCursor = BEGINNING,
+    ) -> AsyncIterator[ExternalOutputStreamItem[AgentEvent]]:
         events = self._events
         fail_after = self._fail_after
         live_tail = self._live_tail
@@ -172,19 +197,22 @@ class _FakeHandle:
         workflow_id = self._workflow_id
         drip = self._drip
 
-        async def gen() -> AsyncIterator[WorkflowStreamItem[AgentEvent]]:
+        async def gen() -> AsyncIterator[ExternalOutputStreamItem[AgentEvent]]:
             # Finite backlog then StopAsyncIteration — unlike the live server stream, which would
             # block tailing. Finite streams make the merge's ordering deterministically testable.
             # The cursor closes this generator (its `aclose`) on unmount/teardown; record that via
             # GeneratorExit so a test can assert the merge released the subscription.
             try:
-                for n, offset in enumerate(range(from_offset, len(events))):
+                from_index = (
+                    0 if after.is_beginning else int(str(after.offset)) + 1
+                )
+                for n, offset in enumerate(range(from_index, len(events))):
                     if fail_after is not None and n >= fail_after:
                         raise RuntimeError("simulated stream read error (e.g. update cap)")
                     if drip is not None:
                         await asyncio.sleep(drip)
-                    yield WorkflowStreamItem(
-                        topic=TURN_EVENTS_TOPIC, data=events[offset], offset=offset
+                    yield ExternalOutputStreamItem(
+                        data=events[offset], offset=Offset(str(offset))
                     )
                 if live_tail:
                     # Block forever (until cancelled by aclose) — a live, idle workflow's poll.
@@ -195,6 +223,14 @@ class _FakeHandle:
                 raise
 
         return gen()
+
+
+class _FakeBackend:
+    def compare_offsets(self, left: Offset, right: Offset) -> int:
+        return int(str(left)) - int(str(right))
+
+    async def aclose(self) -> None:
+        return None
 
 
 class _FakeStreams:
@@ -213,8 +249,18 @@ class _FakeStreams:
         self._live_tail_workflows = live_tail_workflows or set()
         self._drip_workflows = drip_workflows or {}
 
-    def create(self, _client: Any, workflow_id: str) -> _FakeHandle:
-        return _FakeHandle(
+    def mount(
+        self,
+        client: Any,
+        *,
+        backend_factory: Any,
+        workflow_id: str,
+        is_child: bool,
+        mount_index: int,
+        from_cursor: str,
+        skip_until_turn_id: str | None = None,
+    ):
+        handle = _FakeHandle(
             self._streams.get(workflow_id, []),
             closes=self._closes,
             workflow_id=workflow_id,
@@ -222,6 +268,21 @@ class _FakeStreams:
             live_tail=workflow_id in self._live_tail_workflows,
             drip=self._drip_workflows.get(workflow_id),
         )
+        backend = _FakeBackend()
+        cursor = cursor_mod.Cursor(
+            client=client,
+            backend_factory=lambda: backend,
+            workflow_id=workflow_id,
+            is_child=is_child,
+            mount_index=mount_index,
+            from_cursor=from_cursor,
+            skip_until_turn_id=skip_until_turn_id,
+        )
+        cursor._events = handle.subscribe(
+            after=ExternalCursor.deserialize(from_cursor)
+        )
+        cursor._backend = backend
+        return cursor
 
 
 async def _never_stop(_cursor: Any, _ev: AgentEvent) -> bool:
@@ -241,7 +302,7 @@ async def _run_merge(
     live_tail_workflows: set[str] | None = None,
     drip_workflows: dict[str, float] | None = None,
     stall_grace_seconds: float = 5.0,
-    resume_offsets: list[int] | None = None,
+    resume_offsets: list[str] | None = None,
 ) -> list[AgentEvent]:
     """Drive the merge over scripted streams to exhaustion (or should_stop), returning the output.
 
@@ -261,11 +322,12 @@ async def _run_merge(
         drip_workflows=drip_workflows,
     )
     out: list[AgentEvent] = []
-    with patch.object(cursor_mod, "WorkflowStreamClient", fake):
+    with patch.object(cursor_mod.Cursor, "mount", side_effect=fake.mount):
         async for ev, resume_offset in merge_stream(
             client=None,
+            backend_factory=lambda: _FakeBackend(),
             root_workflow_id=root,
-            root_from_offset=root_from_offset,
+            root_from_cursor=_stream_cursor(root_from_offset),
             skip_until_turn_id=skip_until_turn_id,
             select=select,
             should_stop=should_stop or _never_stop,
@@ -342,7 +404,9 @@ def test_open_gate_holds_child_until_message_sent_emitted():
     )
     # _ms stamps subagent_id = child[:6] ("C"); the mount carries it so a later give-up can label
     # the child even if it delivered no events of its own.
-    assert mount == MountChild(workflow_id="C", from_offset=7, subagent_id="C")
+    assert mount == MountChild(
+        workflow_id="C", from_cursor=_stream_cursor(7), subagent_id="C"
+    )
     assert gates.ready(is_child=True, source_workflow_id="C", ev=child_ts)
 
 
@@ -857,13 +921,13 @@ async def test_resume_offset_advances_past_each_root_event():
     # every event is a root event and the cursor advances on each — any offset is a safe resume point
     # under the no-skip policy). A subagent's own events would instead repeat the prior root value.
     streams = _three_turn_root()
-    offsets: list[int] = []
+    offsets: list[str] = []
     merged = await _run_merge(
         streams, root="P", select=select_replay, resume_offsets=offsets
     )
     assert len(merged) == 9
-    # Each root event at offset i hands back resume offset i+1.
-    assert offsets == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    # Each root event at offset i hands back the boundary after that item.
+    assert offsets == [f"A{i}" for i in range(9)]
 
 
 async def test_resume_from_offset_streams_only_events_after_it():

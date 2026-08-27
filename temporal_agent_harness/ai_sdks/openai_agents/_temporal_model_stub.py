@@ -247,17 +247,15 @@ class _TemporalModelStub(Model):  # type:ignore[reportUnusedClass]
         conversation_id: str | None,
         prompt: ResponsePromptParam | None,
     ) -> AsyncIterator[TResponseStreamEvent]:
-        # Streaming relies on activity heartbeats to detect a stuck LLM
-        # call and on WorkflowStreamClient.from_within_activity() to signal
-        # partial results back to the workflow. Local activities support
-        # neither: their result commits with the workflow task, so there
-        # is no independent task to heartbeat against or to send signals
-        # from.
+        # Streaming relies on activity heartbeats to detect a stuck LLM call
+        # and on a direct external-output producer for partial results. Local
+        # activities have neither an independent heartbeat lifecycle nor the
+        # regular Activity context used to bind that producer.
         if self.model_params.use_local_activity:
             raise ValueError(
                 "Streaming is incompatible with use_local_activity "
                 "(local activities do not support heartbeats or the "
-                "workflow stream signal channel)."
+                "external output producer context)."
             )
 
         # Resolve the opaque per-call routing token: prefer the configured

@@ -5,8 +5,8 @@
 
 These helpers are SDK-agnostic: they are meant to be reused across the
 ``google_genai`` plugin and future AI-SDK plugins in this package, so that
-common integration concerns (e.g. live-streaming raw provider events to a
-:py:class:`~temporalio.contrib.workflow_streams.WorkflowStream`) are defined
+common integration concerns (e.g. live-streaming raw provider events to an
+External Workflow Streams output topic) are defined
 once rather than re-implemented per SDK.
 
 Copied into the harness from the sdk-python ``temporalio.contrib.integration_helpers``

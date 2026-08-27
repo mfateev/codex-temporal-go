@@ -25,6 +25,7 @@ from temporal_agent_harness.harness.agent_protocol import (
     SubagentReplyReceived,
     SubagentStopped,
 )
+from temporal_agent_harness.harness.external_streams import StreamCursor
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,7 @@ class MountChild:
     """
 
     workflow_id: str
-    from_offset: int
+    from_cursor: StreamCursor
     subagent_id: str
 
 
@@ -138,7 +139,7 @@ class Gates:
             self.opened.add((ev.event.workflow_id, ev.event.subagent_turn))
             return MountChild(
                 workflow_id=ev.event.workflow_id,
-                from_offset=ev.event.from_offset,
+                from_cursor=ev.event.from_offset,
                 subagent_id=ev.event.subagent_id,
             )
         if isinstance(ev.event, SubagentStopped):

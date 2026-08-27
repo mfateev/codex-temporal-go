@@ -157,7 +157,7 @@ class PydanticAIStreamObserver:
             AgentWorkflowRunner.publisher_from_activity(self._context)
         )
         # Open the model-interaction span at dispatch, before awaiting any event.
-        self._publisher.publish(ModelInteractionStarted(model=self._model))
+        await self._publisher.publish(ModelInteractionStarted(model=self._model))
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
@@ -167,9 +167,9 @@ class PydanticAIStreamObserver:
                 # synthesizes PartEnd for tool-call parts), then always close the started bracket
                 # (usage stays None if the stream errored). Published while the publisher is open.
                 for part in self._pending_tool_calls.values():
-                    self._emit_tool_requested(self._publisher, part)
+                    await self._emit_tool_requested(self._publisher, part)
                 self._pending_tool_calls.clear()
-                self._publisher.publish(
+                await self._publisher.publish(
                     ModelInteractionEnded(model=self._model, usage=self._usage)
                 )
         finally:
@@ -195,10 +195,10 @@ class PydanticAIStreamObserver:
             part = event.part
             if isinstance(part, TextPart):
                 if part.content:
-                    pub.publish(ReplyDelta(text=part.content))
+                    await pub.publish(ReplyDelta(text=part.content))
             elif isinstance(part, ThinkingPart):
                 if part.content:
-                    pub.publish(ThoughtSummaryDelta(delta=_dump(part)))
+                    await pub.publish(ThoughtSummaryDelta(delta=_dump(part)))
             elif isinstance(part, BaseToolCallPart):
                 # A tool call is opening; its args may still stream. Hold it and publish one
                 # consolidated tool_requested on the part's PartEnd.
@@ -207,18 +207,18 @@ class PydanticAIStreamObserver:
             delta = event.delta
             if isinstance(delta, TextPartDelta):
                 if delta.content_delta:
-                    pub.publish(ReplyDelta(text=delta.content_delta))
+                    await pub.publish(ReplyDelta(text=delta.content_delta))
             elif isinstance(delta, ThinkingPartDelta):
                 if delta.content_delta or delta.signature_delta:
-                    pub.publish(ThoughtSummaryDelta(delta=_dump(delta)))
+                    await pub.publish(ThoughtSummaryDelta(delta=_dump(delta)))
             # A ToolCallPartDelta streams arg fragments; the COMPLETE part arrives on PartEnd, so
             # there is nothing to consolidate here.
         elif isinstance(event, PartEndEvent):
             if isinstance(event.part, BaseToolCallPart):
                 self._pending_tool_calls.pop(event.index, None)
-                self._emit_tool_requested(pub, event.part)
+                await self._emit_tool_requested(pub, event.part)
 
-    def _emit_tool_requested(
+    async def _emit_tool_requested(
         self, pub: TurnEventPublisher, part: BaseToolCallPart
     ) -> None:
         """Publish the consolidated ``tool_requested`` for one custom tool call.
@@ -226,7 +226,7 @@ class PydanticAIStreamObserver:
         ``tool_id`` is the SDK ``tool_call_id`` (shared with the execution lifecycle in
         ``run_tool`` via ``RunContext.tool_call_id``). ``args_as_dict`` is best-effort for
         display/approval; the workflow-side reducer does the authoritative parse on its own copy."""
-        pub.publish(
+        await pub.publish(
             ToolRequested(
                 tool_id=part.tool_call_id,
                 tool_name=part.tool_name,

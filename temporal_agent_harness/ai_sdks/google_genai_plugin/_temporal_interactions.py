@@ -80,7 +80,7 @@ class TemporalAsyncInteractions(AsyncInteractionsResource):
     The streaming ``create`` dispatches through the
     ``gemini_interactions_create_streamed`` Temporal activity. The
     activity itself republishes streaming text content as ``reply_delta``
-    events on the workflow's :class:`WorkflowStream` when the
+    events on the workflow's external output topic when the
     ``TemporalApiClient`` was constructed with a runner, so workflows
     don't need to wire that side-channel themselves.
     """

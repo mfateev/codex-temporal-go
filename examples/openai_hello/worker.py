@@ -40,6 +40,7 @@ from temporal_agent_harness.ai_sdks.openai_agents_harness import (
     harness_observer_factory,
     stream_to_provider,
 )
+from temporal_agent_harness.harness import create_external_stream_backend
 
 from .workflow import TASK_QUEUE, OpenAIHelloAgentWorkflow
 
@@ -76,6 +77,7 @@ async def main() -> None:
         client,
         task_queue=task_queue,
         workflows=[OpenAIHelloAgentWorkflow],
+        external_stream_backend=create_external_stream_backend(),
         # No tool activities: get_weather is an inline workflow tool. The OpenAI model
         # activities (incl. invoke_model_activity_streaming) are registered by the plugin.
         activities=[],

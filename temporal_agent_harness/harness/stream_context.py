@@ -28,3 +28,13 @@ class TurnStreamContext(BaseModel):
         "derive it from ``activity.info()`` (which only knows the workflow_id), and the agent's id "
         "is no longer its workflow_id but a short, parent-assignable handle."
     )
+    namespace: str = Field(
+        description="The Temporal namespace containing the publishing workflow."
+    )
+    workflow_id: str = Field(
+        description="The workflow whose external output topic receives the events."
+    )
+    first_execution_run_id: str = Field(
+        description="The stable first Run ID that binds the external stream to this "
+        "Continue-As-New chain."
+    )

@@ -213,10 +213,9 @@ class AgentEventType(StrEnum):
 
     Unlike every other event here, this one is **never published by a workflow** — it is
     SYNTHESIZED CLIENT-SIDE by the stream merge and injected into the merged logical stream. It is
-    emitted when a mounted subagent stream can't be read (today: a stopped/completed subagent, whose
-    stream ``workflow_streams`` can't yet replay — an upstream workflow_streams fix is in flight) 
-    or stalls without delivering its turn. It is purely informational and **non-fatal**: the parent's
-    own stream is self-sufficient (it already carries the subagent's ``subagent_reply_received`` and 
+    emitted when a mounted subagent stream can't be read from its external provider or stalls
+    without delivering its turn. It is purely informational and **non-fatal**: the parent's
+    own stream is self-sufficient (it already carries the subagent's ``subagent_reply_received`` and
     the send-tool's result), so the parent renders fully; only the subagent's own turn DETAIL is
     missing. The merge does NOT retry — recovery is a fresh ``attach`` (a full page refresh in a
     UI). A drill-in UI keys off the carried ``subagent_id`` to mark that subagent's view degraded.
@@ -683,8 +682,8 @@ class SubagentMessageSent(StreamEvent[Literal[AgentEventType.SUBAGENT_MESSAGE_SE
         "Several dispatches in one parent turn share that envelope turn_number but get distinct "
         "subagent_turn values; pairs with the turn_number on the subagent's OWN stream events."
     )
-    from_offset: int = Field(
-        default=0,
+    from_offset: str = Field(
+        default="B",
         description="The offset in the SUBAGENT's OWN stream at which this turn's events begin "
         "(the child stream position the parent resumes consumption from for this turn). A client "
         "merging the parent + subagent streams positions the child cursor here the first time it "

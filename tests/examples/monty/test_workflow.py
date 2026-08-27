@@ -15,9 +15,13 @@ import uuid
 import pytest_asyncio
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
+
+from temporal_agent_harness.harness import (
+    create_external_stream_backend,
+    subscribe_external_output,
+)
 
 from temporal_agent_harness.harness.agent_protocol import (
     SEND_AGENT_MESSAGE_UPDATE,
@@ -45,6 +49,7 @@ async def client_and_queue():
         env.client,
         task_queue=task_queue,
         workflows=[MontyDynamicAgentWorkflow],
+        external_stream_backend=create_external_stream_backend(),
         activities=[*activities.ALL_ACTIVITIES, *CODE_MODE_ACTIVITIES],
     ):
         try:
@@ -54,12 +59,9 @@ async def client_and_queue():
 
 
 async def _reply_text(client: Client, workflow_id: str) -> str:
-    stream = WorkflowStreamClient.create(client, workflow_id)
     reply: str | None = None
-    async for item in stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
+    async for item in subscribe_external_output(
+        client, workflow_id, TURN_EVENTS_TOPIC, type=AgentEvent
     ):
         envelope: AgentEvent = item.data
         if envelope.event.type == AgentEventType.REPLY:

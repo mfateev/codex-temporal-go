@@ -57,8 +57,8 @@ class RunSubagentTurnInput(BaseModel):
         description="The parent's locally tracked next turn number for this subagent; the "
         "child rejects the send as stale if it doesn't match its own next turn."
     )
-    from_offset: int = Field(
-        default=0,
+    from_offset: str = Field(
+        default="B",
         description="Where to begin consuming the child's stream — the caller's last-known "
         "offset (the previous turn's returned consumed_offset). A PERFORMANCE HINT ONLY, never "
         "correctness-critical: the streamer filters to this turn's turn_id, so a stale (smaller) "
@@ -96,7 +96,7 @@ class SubagentTurnResult(BaseModel):
     turn_number: int = Field(
         description="The number of the turn the child actually ran."
     )
-    consumed_offset: int = Field(
+    consumed_offset: str = Field(
         description="The child stream position just past this turn's turn_end. The caller "
         "stores it and threads it back as the next turn's from_offset, so each turn streams "
         "from where the last one ended (cheap resume, no full-history replay)."

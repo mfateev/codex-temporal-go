@@ -18,7 +18,6 @@ resolution (the same convention every activity-defining module in this repo foll
 from datetime import timedelta
 
 from temporalio import workflow
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.workflow import ActivityConfig
 
 with workflow.unsafe.imports_passed_through():
@@ -106,7 +105,6 @@ class CodeModeE2EParentWorkflow:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             # Skip approvals so the test drives host calls without an approver in the loop.
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
         )

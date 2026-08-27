@@ -20,18 +20,21 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import timedelta
 
 import pytest
 import pytest_asyncio
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
-from temporal_agent_harness.harness import AgentWorkflowRunner, agent
+from temporal_agent_harness.harness import (
+    AgentWorkflowRunner,
+    agent,
+    create_external_stream_backend,
+    subscribe_external_output,
+)
 from temporal_agent_harness.harness.agent import ToolApprovalContext, ToolApprovalPolicy
 from temporal_agent_harness.harness.agent_client import AgentClient, ToolApprovalError
 from temporal_agent_harness.harness.agent_protocol import (
@@ -124,7 +127,6 @@ class ApprovalProbeAgent(_BaseProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             # Safe-by-default baseline: gate everything. Tests relax it per session via
             # AgentConfig.approval_policy.
             approval_policy_default=ToolApprovalPolicy.always_require_approvals(),
@@ -153,7 +155,6 @@ class CustomFallbackProbeAgent(_BaseProbe):
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             approval_policy_default=ToolApprovalPolicy.always_require_approvals(),
             custom_approval_fallback=_approve_gated_activity_tool,
         )
@@ -183,6 +184,7 @@ async def env_and_client():
         env.client,
         task_queue=task_queue,
         workflows=[ApprovalProbeAgent, CustomFallbackProbeAgent],
+        external_stream_backend=create_external_stream_backend(),
         activities=[
             agent.tool_activity(gated_activity_tool),
             agent.tool_activity(safe_activity_tool),
@@ -220,12 +222,8 @@ async def _send(handle, text: str, expected_turn: int) -> None:
 
 
 def _subscribe(client: Client, workflow_id: str):
-    stream = WorkflowStreamClient.create(client, workflow_id)
-    return stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
+    return subscribe_external_output(
+        client, workflow_id, TURN_EVENTS_TOPIC, type=AgentEvent
     )
 
 
@@ -661,9 +659,8 @@ async def test_close_while_pending_auto_denies(env_and_client):
 
     async with asyncio.timeout(30):
         await handle.result()
-    completed = client.get_workflow_handle(handle.id)
-    last_reply = await completed.query("last_reply", result_type=str)
-    assert last_reply == "denied:agent closed before approval"
+    events = await _drain_to_turn_end(client, handle.id)
+    assert _reply_text(events) == "denied:agent closed before approval"
 
 
 async def test_inline_workflow_tool_gates(env_and_client):

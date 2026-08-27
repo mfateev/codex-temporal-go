@@ -51,8 +51,19 @@ class _FakePublisher:
     def __init__(self) -> None:
         self.events: list[Any] = []
 
-    def publish(self, event: Any) -> None:
+    async def publish(self, event: Any) -> None:
         self.events.append(event)
+
+
+def _context(turn_id: str, turn_number: int, agent_id: str) -> TurnStreamContext:
+    return TurnStreamContext(
+        turn_id=turn_id,
+        turn_number=turn_number,
+        agent_id=agent_id,
+        namespace="default",
+        workflow_id="test-agent",
+        first_execution_run_id="test-first-run",
+    )
 
 
 @pytest.fixture
@@ -141,7 +152,7 @@ async def _drive(
 
 @pytest.mark.asyncio
 async def test_full_turn_translates_to_harness_vocabulary(fake_publisher: _FakePublisher):
-    ctx = TurnStreamContext(turn_id="t-1", turn_number=1, agent_id="agent-abc")
+    ctx = _context(turn_id="t-1", turn_number=1, agent_id="agent-abc")
     events = [
         _text_delta("Hel"),
         _text_delta("lo"),
@@ -201,7 +212,7 @@ async def test_full_turn_translates_to_harness_vocabulary(fake_publisher: _FakeP
 async def test_tool_requested_falls_back_to_buffer_when_done_args_empty(
     fake_publisher: _FakePublisher,
 ):
-    ctx = TurnStreamContext(turn_id="t-2", turn_number=1, agent_id="agent-abc")
+    ctx = _context(turn_id="t-2", turn_number=1, agent_id="agent-abc")
     events = [
         _fn_call_added("fc_item_9", "call_BUF", "search"),
         _args_delta("fc_item_9", '{"n": '),
@@ -223,7 +234,7 @@ async def test_started_emitted_at_dispatch_before_any_event(fake_publisher: _Fak
     # the started→ended span measures the true model-call latency (time-to-first-token
     # included), not just the tail after the first chunk arrives. Prove it by opening the
     # observer and checking started is already published before on_event is ever called.
-    ctx = TurnStreamContext(turn_id="t-4", turn_number=1, agent_id="agent-abc")
+    ctx = _context(turn_id="t-4", turn_number=1, agent_id="agent-abc")
     async with h.OpenAIStreamObserver(ctx, model="gpt-5.1") as obs:
         assert len(fake_publisher.events) == 1
         started = fake_publisher.events[0]
@@ -236,7 +247,7 @@ async def test_started_emitted_at_dispatch_before_any_event(fake_publisher: _Fak
 
 @pytest.mark.asyncio
 async def test_bracket_closes_even_with_no_content(fake_publisher: _FakePublisher):
-    ctx = TurnStreamContext(turn_id="t-3", turn_number=1, agent_id="agent-abc")
+    ctx = _context(turn_id="t-3", turn_number=1, agent_id="agent-abc")
     # model=None here to exercise the degraded path (requested model unknown).
     await _drive([], ctx, model=None)
     kinds = [e.type for e in fake_publisher.events]

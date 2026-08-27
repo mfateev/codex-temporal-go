@@ -77,20 +77,21 @@ class ModelActivityParameters:
     """Stream topic to publish raw model stream events to when the workflow
     calls ``Runner.run_streamed``. Required for ``Runner.run_streamed``;
     if left as ``None``, ``run_streamed`` raises before scheduling any
-    activity. The workflow must host a
-    :class:`temporalio.contrib.workflow_streams.WorkflowStream` to receive
-    the publishes; otherwise the signals are unhandled and dropped.
+    activity. The Worker hosting the workflow must be configured with the
+    same External Workflow Streams output backend used by the activity.
 
-    Streaming is incompatible with ``use_local_activity`` (local activities
-    do not support heartbeats or the workflow stream signal channel).
+    Streaming is incompatible with ``use_local_activity`` (the direct external
+    output publisher requires a regular Activity client/context).
 
     .. warning::
         Streaming support is experimental and may change in future
         versions."""
 
     streaming_batch_interval: timedelta = timedelta(milliseconds=100)
-    """Interval between automatic flushes for the stream publisher used
-    by the streaming activity.
+    """Legacy raw-stream batching hint, retained for plugin compatibility.
+
+    External output producers commit each observed event directly, so the
+    default observer does not currently use this interval.
 
     .. warning::
         Streaming support is experimental and may change in future

@@ -52,7 +52,7 @@ class _GeminiApiRequest(BaseModel):
     requests where the caller wired an ``AgentWorkflowRunner`` into
     ``google_genai_client``. When set, the streaming activity
     republishes each chunk's text content as a ``reply_delta`` event on
-    the workflow's ``WorkflowStream`` so the UI sees fine-grained text
+    the workflow's external output topic so the UI sees fine-grained text
     deltas as Gemini emits them. ``None`` (the default) leaves the
     legacy non-streamed-to-stream behavior intact. The carrier is
     opaque from this module's perspective — it just rides along to the

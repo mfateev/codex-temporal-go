@@ -85,10 +85,8 @@ class AgentService:
         PollMessagesInput,
         PollMessagesOutput,
     ] = Operation(name="PollMessages")
-    """Async operation - attaches a completion callback to WorkflowStream's built-in poll
-    update so reply_delta events published from the agent workflow are delivered.
-    Returns a batch of stream items (WorkflowStream PollResult wire format) plus the
-    next cursor.
+    """Long-poll the agent's external output topic for turn events. Returns a batch of
+    stream items plus the next opaque cursor.
     """
 
     provide_callback_result: Operation[

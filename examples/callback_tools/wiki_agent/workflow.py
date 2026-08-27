@@ -24,7 +24,6 @@ from functools import partial
 from typing import Sequence
 
 from temporalio import workflow
-from temporalio.contrib.workflow_streams import WorkflowStream
 from temporalio.exceptions import ApplicationError
 from temporalio.workflow import ActivityConfig
 
@@ -99,7 +98,6 @@ class WikiAgentWorkflow:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             # The tools run on the user's own machine — the human attached in the terminal IS the
             # one executing each call — so a separate human-approval gate would be redundant here.
             # Skip approvals by default; a caller can still tighten this per session via

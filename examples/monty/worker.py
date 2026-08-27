@@ -38,6 +38,9 @@ from temporalio.envconfig import ClientConfig
 from temporalio.worker import Worker
 
 from temporal_agent_harness.harness.code_mode.activities import CODE_MODE_ACTIVITIES
+from temporal_agent_harness.harness.external_streams import (
+    create_external_stream_backend,
+)
 from temporal_agent_harness.harness.subagent_activities import SubagentActivities
 
 from . import activities
@@ -101,6 +104,7 @@ async def main() -> None:
             MontyChatAgentWorkflow,
             MontyChatSubagentWorkflow,
         ],
+        external_stream_backend=create_external_stream_backend(),
         # The travel-booking activities (the host functions, dispatched by Code Mode) plus the
         # Code Mode sandbox-stepping activities (shared by all three agents — every one runs its
         # scripts through the harness Code Mode). Plus the subagent-turn activity (drives the

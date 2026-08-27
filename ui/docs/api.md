@@ -232,8 +232,8 @@ is rejected, the response is a regular HTTP error instead of an SSE stream.
 The stream is already merged: it contains the root agent and every recursive
 subagent event in one ordered sequence.
 
-The client does not pass a stream offset to `POST /api/chat`; the workflow
-acceptance response determines the exact turn-start offset internally.
+The client does not pass a stream cursor to `POST /api/chat`; the server snapshots the external
+topic tail before submission and scans from that boundary to the accepted turn.
 
 ### `POST /api/messages`
 
@@ -243,7 +243,6 @@ Submits a message without opening a turn stream.
 type SubmitMessageResponse = {
   turn_number: number
   turn_id: string
-  accepted_offset: number
   pending: boolean
 }
 ```
@@ -284,17 +283,17 @@ Monty conversational agents additionally accept:
 | --- | --- |
 | `/model gemini-3.1-flash-lite` | `{"name":"set-model","arg":"gemini-3.1-flash-lite"}` |
 
-### `GET /api/attach?session_id=...&from_offset=0`
+### `GET /api/attach?session_id=...&from_offset=B`
 
 Replays or tails an existing merged session stream.
 
 Response media type: `text/event-stream`.
 
-When `from_offset` is `0`, the server replays the merged session event history.
-When it is non-zero, pass a prior frame's `resume_offset`; only newer root-stream
-positions are streamed. The stream returns when the workflow is idle and caught
-up. `resume_offset` is a root-stream cursor, not a display ordinal: several
-subagent frames may carry the same value.
+When `from_offset` is `B`, the server replays the merged session event history. Otherwise, pass a
+prior frame's opaque string `resume_offset`; only newer root-stream positions are streamed. Persist
+and return the cursor unchanged—do not parse, sort, or increment it. The stream returns when the
+workflow is idle and caught up. `resume_offset` is a root-stream cursor, not a display ordinal:
+several subagent frames may carry the same value.
 
 ## Error Responses
 

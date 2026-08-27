@@ -34,6 +34,10 @@ from temporal_agent_harness.harness.agent_client import (
     StaleTurnError,
     ToolApprovalError,
 )
+from temporal_agent_harness.harness.external_streams import (
+    BEGINNING_STREAM_CURSOR,
+    StreamCursor,
+)
 from temporal_agent_harness.harness.agent_protocol import (
     AgentConfig,
     AgentEvent,
@@ -236,7 +240,9 @@ def create_agent_harness_app(
         return JSONResponse(content=content, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/attach")
-    async def attach(session_id: str, from_offset: int = 0) -> StreamingResponse:
+    async def attach(
+        session_id: str, from_offset: StreamCursor = BEGINNING_STREAM_CURSOR
+    ) -> StreamingResponse:
         client = AgentClient(temporal=app.state.temporal, workflow_id=session_id)
         return StreamingResponse(
             await client.attach(on_item=_yield_item, from_offset=from_offset),
@@ -287,7 +293,7 @@ def create_agent_harness_app(
 
     @app.post("/api/chat")
     async def chat(req: ChatRequestBody):
-        def on_item(item: AgentStreamOutput, resume_offset: int) -> bytes:
+        def on_item(item: AgentStreamOutput, resume_offset: StreamCursor) -> bytes:
             match item:
                 case AgentTurnTimeout():
                     return _sse(
@@ -619,14 +625,14 @@ def _mount_static_ui(
         raise HTTPException(status_code=404)
 
 
-def _sse(event: str, data: dict, resume_offset: int | None = None) -> bytes:
+def _sse(event: str, data: dict, resume_offset: StreamCursor | None = None) -> bytes:
     payload = {**data}
     if resume_offset is not None:
         payload["resume_offset"] = resume_offset
     return f"event: {event}\ndata: {json.dumps(payload)}\n\n".encode()
 
 
-def _yield_item(item, resume_offset: int | None = None) -> bytes:
+def _yield_item(item, resume_offset: StreamCursor | None = None) -> bytes:
     if isinstance(item, AgentEvent):
         payload = item.event
         data = {

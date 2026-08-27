@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import dataclass
 from datetime import timedelta
 
 import pytest
@@ -28,11 +29,15 @@ from pydantic import BaseModel
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
-from temporalio.contrib.workflow_streams import WorkflowStream, WorkflowStreamClient
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
-from temporal_agent_harness.harness import AgentWorkflowRunner, agent
+from temporal_agent_harness.harness import (
+    AgentWorkflowRunner,
+    agent,
+    create_external_stream_backend,
+    subscribe_external_output,
+)
 from temporal_agent_harness.harness.agent import ToolApprovalPolicy
 from temporal_agent_harness.harness.agent_client import (
     AgentClient,
@@ -97,7 +102,6 @@ class CallbackProbeAgent:
     def __init__(self, config: AgentConfig) -> None:
         self._runner = AgentWorkflowRunner(
             config,
-            stream=WorkflowStream(),
             # Default: no gate, so the callback mechanics are isolated. The gating-parity test
             # overrides this per session via AgentConfig.approval_policy.
             approval_policy_default=ToolApprovalPolicy.dangerously_skip_all(),
@@ -135,6 +139,17 @@ class CallbackProbeAgent:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _TestContext:
+    env: WorkflowEnvironment
+    client: Client
+    task_queue: str
+
+    def __iter__(self):
+        yield self.client
+        yield self.task_queue
+
+
 @pytest_asyncio.fixture
 async def env_and_client():
     env = await WorkflowEnvironment.start_time_skipping(
@@ -146,10 +161,11 @@ async def env_and_client():
         env.client,
         task_queue=task_queue,
         workflows=[CallbackProbeAgent],
+        external_stream_backend=create_external_stream_backend(),
         workflow_runner=UnsandboxedWorkflowRunner(),
     ):
         try:
-            yield env.client, task_queue
+            yield _TestContext(env, env.client, task_queue)
         finally:
             await env.shutdown()
 
@@ -174,12 +190,8 @@ async def _send(handle, text: str, expected_turn: int) -> None:
 
 
 def _subscribe(client: Client, workflow_id: str):
-    stream = WorkflowStreamClient.create(client, workflow_id)
-    return stream.subscribe(
-        topics=[TURN_EVENTS_TOPIC],
-        from_offset=0,
-        result_type=AgentEvent,
-        poll_cooldown=timedelta(milliseconds=10),
+    return subscribe_external_output(
+        client, workflow_id, TURN_EVENTS_TOPIC, type=AgentEvent
     )
 
 
@@ -422,6 +434,11 @@ async def test_unfulfilled_callback_times_out(env_and_client):
     handle = await _start(client, task_queue)
     await _send(handle, "timeout", expected_turn=1)
 
+    # External-output reads happen in Redis, so the test server cannot infer
+    # from that read that it should auto-skip a Workflow timer. Advance the
+    # callback deadline explicitly before tailing the external topic.
+    await env_and_client.env.sleep(timedelta(seconds=6))
+
     events = await _drain_to_turn_end(client, handle.id)
     types = _types_for(events, "cb-timeout")
     assert types == [
@@ -502,6 +519,14 @@ async def test_close_while_pending_fails_the_callback(env_and_client):
 
     async with asyncio.timeout(30):
         await handle.result()
-    completed = client.get_workflow_handle(handle.id)
-    last_reply = await completed.query("last_reply", result_type=str)
-    assert last_reply == "error:agent closed before the callback result arrived"
+    # Completed-workflow replay is served entirely by external output. In particular, attach must
+    # not depend on a cold workflow query once the workflow's worker has stopped polling.
+    stream = await AgentClient(client, handle.id).attach(
+        on_item=lambda item, _resume_offset: item
+    )
+    events: list[AgentEvent] = []
+    async with asyncio.timeout(30):
+        async for item in stream:
+            assert isinstance(item, AgentEvent)
+            events.append(item)
+    assert _reply_text(events) == "error:agent closed before the callback result arrived"
