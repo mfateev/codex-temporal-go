@@ -55,6 +55,9 @@ The harness currently pins the unreleased Python SDK revision that provides Exte
 Streams. That pin is part of the harness dependency itself, so applications do not need a separate
 SDK source override.
 
+For the fork URLs, streaming branches, reproducible version chain, and source-build workflow, see
+[External Workflow Streams fork and branch setup](EXTERNAL_STREAMS_README.md).
+
 **Extras:**
 
 - **`ui`** — the reusable FastAPI server and packaged browser UI (pulls in `fastapi[standard]`,
